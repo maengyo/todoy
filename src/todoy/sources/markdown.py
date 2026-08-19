@@ -97,6 +97,11 @@ class MarkdownSource(Source):
                 todos.append(Todo(text=item, done=False, id=None, source=self.name))
 
     def _scan_today_files(self, exclude: set[Path]) -> list[Path]:
+        # Symlinked files are excluded here (but not from `exclude`, i.e. pinned
+        # notes) so a `.md` symlink planted inside the scanned folder can't be
+        # used to read arbitrary files outside it; pinned notes are explicit,
+        # user-designated config entries where absolute paths (and thus
+        # symlinks) are already allowed by contract.
         matches: list[Path] = []
         for dirpath, dirnames, filenames in os.walk(self.folder):
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
@@ -105,6 +110,8 @@ class MarkdownSource(Source):
                     continue
                 path = Path(dirpath) / filename
                 if path in exclude:
+                    continue
+                if path.is_symlink() or not path.is_file():
                     continue
                 try:
                     mtime = path.stat().st_mtime

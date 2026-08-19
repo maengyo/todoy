@@ -39,6 +39,21 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Config emitter: escape U+007F (DEL) in TOML strings — save/load round-trip could otherwise produce a file todoy itself could not parse.
 - Deferred minors filed as issues: markdown parser robustness (#10), CLI hardening additions (#6).
 
+## M3 — 2026-08-20
+
+### Decisions
+
+- **Display layer package.** TUI lives in `src/todoy/display/` (`tui.py`, `messages.py`, `characters.py`) so M4 can add the overlay backend beside it; `sanitize_text` moved there as the shared output-sanitizing helper.
+- **Taunting message pack.** en/ko pools (≥5 taunts, ≥3 cheeky congrats per language); tone rule enforced in review: tease the todos/situation, never the person. Language resolution: explicit flag → `TODOY_LANG` → `LANG` starting with `ko` → `en`. No config schema change in M3.
+- **Characters.** Built-in catalog (cat/dog/ghost/robot) with emoji + pure-ASCII fallback art; `--character` flag selects, emoji auto-disabled when stdout encoding can't encode it (`--ascii` forces).
+- **Bubble metrics use display columns**, not code points — East Asian Wide/Fullwidth characters count as 2 (stdlib `unicodedata.east_asian_width`), so Korean text renders an aligned bubble.
+
+### Modifications from cross-review & security audit
+
+- Replaced a ko taunt line that implied habitual personal failure (tone rule); tests now assert every taunt line carries `{count}`.
+- Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
+- The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
+
 ## Post-M1 — 2026-08-20
 
 - **LICENSE added ahead of schedule.** At the user's request, the MIT `LICENSE` file (standard text, copyright maengyo) was added now instead of waiting for M5; `pyproject.toml` already carried `license = "MIT"` (PEP 639 SPDX expression), and adding the file makes hatchling emit `License-Expression: MIT` + `License-File: LICENSE` in built metadata. Verified via `uv build`, `uv sync`, and the full test suite (31 passed, ruff clean).

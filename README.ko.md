@@ -4,8 +4,8 @@
 
 오늘의 할 일을 까먹지 않게 해주는 캐릭터 — 터미널에서도, 데스크톱에서도.
 
-**상태: 개발 중.** M1(코어 CLI)과 M2(마크다운/Obsidian 소스 + `todoy init`)가 완료됐습니다.
-TUI 캐릭터와 macOS 오버레이는 [로드맵](docs/requirements.ko.md#마일스톤)에 있습니다.
+**상태: 개발 중.** M1(코어 CLI), M2(마크다운/Obsidian 소스 + `todoy init`),
+M3(`todoy tui`)가 완료됐습니다. 다음은 macOS 오버레이입니다 ([로드맵](docs/requirements.ko.md#마일스톤)).
 
 ## 지금 되는 것
 
@@ -61,9 +61,30 @@ $ uv run todoy list  # 또는 venv 안에서: todoy list
 
 PyPI 배포(`pipx install todoy` / `uv tool install todoy`)는 M5에서 제공됩니다.
 
+### 캐릭터 만나기 (`todoy tui`)
+
+캐릭터가 말풍선으로 오늘의 할 일을 전해줍니다 — 살짝 약올리는 맛과 함께:
+
+```console
+$ todoy tui
+.---------------------------------------------.
+| 3개가 여기서 노숙 중이야. 집에 좀 보내주자? |
+| [#1] 우유 사기                              |
+| * 회의 준비                                 |
+| * 은행 전화                                 |
+`---------------------------------------------'
+  /
+🐱
+```
+
+- `todoy tui --brief`는 한 줄만 출력합니다 — `.zshrc` / `.bashrc`에 넣으면
+  새 터미널마다 잔소리를 들을 수 있어요: `🐱 3 todos: 우유 사기 (+2 more)`
+- `--character cat|dog|ghost|robot`, `--lang en|ko`, 이모지 없는 터미널엔 `--ascii`.
+- 메시지는 할 일을 놀리지, 당신을 공격하지 않습니다. 캐릭터는 알려줄 뿐 — 끝내는 건 여전히 당신 몫.
+
 ## 로드맵
 
-- **M3** — `todoy tui`: 캐릭터가 말풍선으로 오늘의 할 일을 보여줌; 셸 rc용 `--brief` 모드
+
 - **M4** — `todoy overlay`: 데스크톱 플로팅 캐릭터(macOS 우선), 주기 알림과 스누즈
 - **M5** — 릴리스: 전체 문서, MIT 라이선스, CI, PyPI
 

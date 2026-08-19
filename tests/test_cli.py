@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import random
+import sys
+import types
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from todoy.cli import _sanitize_todo_text, main
+from todoy.cli import main
 from todoy.config import DEFAULT_INTERVAL_MINUTES, Config, load_config, save_config
+from todoy.display import sanitize_text
 from todoy.sources.builtin import BuiltinSource
 
 
@@ -37,6 +42,48 @@ class FakeInput:
         answer = self._answers[self._index]
         self._index += 1
         return answer
+
+
+@dataclass(frozen=True)
+class FakeCharacter:
+    name: str
+    emoji: str
+    ascii_art: str
+
+
+def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    messages = types.ModuleType("todoy.display.messages")
+
+    def resolve_language(lang: str | None = None) -> str:
+        return lang if lang is not None else "en"
+
+    def taunt(count: int, language: str, rng: random.Random | None = None) -> str:
+        del rng
+        return f"{language}: {count} open"
+
+    messages.resolve_language = resolve_language
+    messages.taunt = taunt
+    monkeypatch.setitem(sys.modules, "todoy.display.messages", messages)
+
+    characters = types.ModuleType("todoy.display.characters")
+    available = {
+        "cat": FakeCharacter(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
+        "robot": FakeCharacter(name="robot", emoji="🤖", ascii_art="[robot]"),
+    }
+
+    def get_character(name: str | None = None) -> FakeCharacter:
+        resolved_name = name if name is not None else "cat"
+        try:
+            return available[resolved_name]
+        except KeyError as exc:
+            available_names = ", ".join(available)
+            msg = f"Unknown character: {resolved_name}. Available: {available_names}"
+            raise ValueError(msg) from exc
+
+    characters.get_character = get_character
+    monkeypatch.setitem(sys.modules, "todoy.display.characters", characters)
+    monkeypatch.setattr("todoy.cli.get_character", get_character)
+    monkeypatch.setattr("todoy.cli.resolve_language", resolve_language)
 
 
 def test_init_wizard_builtin_only_writes_default_config(
@@ -293,7 +340,7 @@ def test_list_config_error_prints_stderr_and_exits_1(
 
 
 def test_sanitize_todo_text_strips_control_characters() -> None:
-    assert _sanitize_todo_text("evil\x1b]0;pwned\x07") == "evil]0;pwned"
+    assert sanitize_text("evil\x1b]0;pwned\x07") == "evil]0;pwned"
 
 
 def test_todo_text_is_sanitized_in_add_list_and_done_output(
@@ -319,3 +366,115 @@ def test_todo_text_is_sanitized_in_add_list_and_done_output(
     assert done_output.out == f"Done #1: {safe_text}\n"
     assert done_output.err == ""
     assert data_file.exists()
+
+
+def test_tui_prints_aggregated_builtin_and_markdown_todos(
+    tmp_path: Path,
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    notes_folder = tmp_path / "notes"
+    notes_folder.mkdir()
+    (notes_folder / "Pinned.md").write_text("- markdown task\n", encoding="utf-8")
+    save_config(
+        Config(
+            enabled_sources=["builtin", "markdown"],
+            markdown_folder=notes_folder,
+            markdown_pinned=["Pinned.md"],
+        ),
+        config_file,
+    )
+    main(["add", "builtin task"])
+    capsys.readouterr()
+
+    exit_code = main(["tui", "--character", "robot", "--lang", "ko"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "\n".join(
+        [
+            ".-------------------.",
+            "| ko: 2 open        |",
+            "| [#1] builtin task |",
+            "| * markdown task   |",
+            "`-------------------'",
+            "  /",
+            "🤖",
+            "",
+        ]
+    )
+    assert captured.err == ""
+    assert data_file.exists()
+
+
+def test_tui_brief_ascii_flag_forces_ascii_character(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    main(["add", "buy milk"])
+    main(["add", "read docs"])
+    capsys.readouterr()
+
+    exit_code = main(["tui", "--brief", "--ascii"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "(=^.^=) 2 todos: buy milk (+1 more)\n"
+    assert captured.err == ""
+    assert data_file.exists()
+
+
+def test_tui_unknown_character_prints_stderr_and_exits_1(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+
+    exit_code = main(["tui", "--character", "dragon\x1b[31m"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "Unknown character: dragon[31m. Available: cat, robot\n"
+    assert "\x1b" not in captured.err
+    assert "\x07" not in captured.err
+    assert not data_file.exists()
+
+
+def test_tui_unknown_character_with_osc_sequence_sanitizes_stderr(
+    data_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(["tui", "--character", "dragon\x1b]0;x\x07"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "Unknown character: dragon]0;x. Available: cat, dog, ghost, robot" in captured.err
+    assert "\x1b" not in captured.err
+    assert "\x07" not in captured.err
+    assert not data_file.exists()
+
+
+def test_tui_config_error_prints_stderr_and_exits_1(
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    config_file.write_text('[sources]\nenabled = ["not-a-source"]\n', encoding="utf-8")
+
+    exit_code = main(["tui"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "Unknown source name: not-a-source\n"
+    assert "Traceback" not in captured.err
+    assert not data_file.exists()

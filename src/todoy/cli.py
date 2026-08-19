@@ -15,6 +15,10 @@ from todoy.config import (
     load_config,
     save_config,
 )
+from todoy.display import sanitize_text
+from todoy.display.characters import get_character
+from todoy.display.messages import resolve_language
+from todoy.display.tui import render_tui
 from todoy.models import Todo
 from todoy.sources.builtin import BuiltinSource
 
@@ -37,14 +41,17 @@ def _build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--all", action="store_true", dest="include_done")
     list_parser.set_defaults(handler=_list)
 
+    tui_parser = subparsers.add_parser("tui")
+    tui_parser.add_argument("--brief", action="store_true")
+    tui_parser.add_argument("--character")
+    tui_parser.add_argument("--lang", choices=("en", "ko"))
+    tui_parser.add_argument("--ascii", action="store_true", dest="force_ascii")
+    tui_parser.set_defaults(handler=_tui)
+
     init_parser = subparsers.add_parser("init")
     init_parser.set_defaults(handler=_init)
 
     return parser
-
-
-def _sanitize_todo_text(text: str) -> str:
-    return "".join(ch for ch in text if ch.isprintable() or ch == " ")
 
 
 def _todo_id(todo: Todo) -> int:
@@ -56,7 +63,7 @@ def _todo_id(todo: Todo) -> int:
 
 def _add(args: argparse.Namespace, source: BuiltinSource) -> int:
     todo = source.add(args.text)
-    print(f"Added #{_todo_id(todo)}: {_sanitize_todo_text(todo.text)}")
+    print(f"Added #{_todo_id(todo)}: {sanitize_text(todo.text)}")
     return 0
 
 
@@ -67,20 +74,25 @@ def _done(args: argparse.Namespace, source: BuiltinSource) -> int:
         print(f"No todo with id {args.todo_id}", file=sys.stderr)
         return 1
 
-    print(f"Done #{_todo_id(todo)}: {_sanitize_todo_text(todo.text)}")
+    print(f"Done #{_todo_id(todo)}: {sanitize_text(todo.text)}")
     return 0
+
+
+def _collect_todos(*, include_done: bool) -> tuple[list[Todo], list[Todo]]:
+    builtin_todos: list[Todo] = []
+    non_builtin_todos: list[Todo] = []
+    for configured_source in build_sources(load_config()):
+        if isinstance(configured_source, BuiltinSource):
+            builtin_todos.extend(configured_source.list_todos(include_done=include_done))
+        else:
+            non_builtin_todos.extend(configured_source.get_todos())
+    return builtin_todos, non_builtin_todos
 
 
 def _list(args: argparse.Namespace, source: BuiltinSource) -> int:
     del source
 
-    builtin_todos: list[Todo] = []
-    non_builtin_todos: list[Todo] = []
-    for configured_source in build_sources(load_config()):
-        if isinstance(configured_source, BuiltinSource):
-            builtin_todos.extend(configured_source.list_todos(include_done=args.include_done))
-        else:
-            non_builtin_todos.extend(configured_source.get_todos())
+    builtin_todos, non_builtin_todos = _collect_todos(include_done=args.include_done)
 
     if not builtin_todos and not non_builtin_todos:
         print("No todos for today 🎉")
@@ -88,9 +100,28 @@ def _list(args: argparse.Namespace, source: BuiltinSource) -> int:
 
     for todo in builtin_todos:
         marker = "[x] " if todo.done else ""
-        print(f"  {_todo_id(todo)}. {marker}{_sanitize_todo_text(todo.text)}")
+        print(f"  {_todo_id(todo)}. {marker}{sanitize_text(todo.text)}")
     for todo in non_builtin_todos:
-        print(f"  - {_sanitize_todo_text(todo.text)}")
+        print(f"  - {sanitize_text(todo.text)}")
+    return 0
+
+
+def _tui(args: argparse.Namespace, source: BuiltinSource) -> int:
+    del source
+
+    character = get_character(args.character)
+    language = resolve_language(args.lang)
+    builtin_todos, non_builtin_todos = _collect_todos(include_done=False)
+    use_emoji = False if args.force_ascii else None
+    print(
+        render_tui(
+            [*builtin_todos, *non_builtin_todos],
+            character=character,
+            language=language,
+            brief=args.brief,
+            use_emoji=use_emoji,
+        )
+    )
     return 0
 
 
@@ -166,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return handler(args, BuiltinSource())
     except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+        print(sanitize_text(str(exc)), file=sys.stderr)
         return 1
 
 

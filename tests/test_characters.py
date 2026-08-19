@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+import pytest
+
+from todoy.display.characters import CHARACTERS, Character, get_character
+
+
+def test_characters_has_at_least_four_entries() -> None:
+    assert len(CHARACTERS) >= 4
+
+
+def test_characters_include_cat_default() -> None:
+    assert "cat" in CHARACTERS
+
+
+@pytest.mark.parametrize("name", list(CHARACTERS))
+def test_every_character_has_nonempty_emoji(name: str) -> None:
+    assert CHARACTERS[name].emoji != ""
+
+
+@pytest.mark.parametrize("name", list(CHARACTERS))
+def test_every_character_ascii_art_is_pure_ascii(name: str) -> None:
+    ascii_art = CHARACTERS[name].ascii_art
+    assert ascii_art != ""
+    assert ascii_art.isascii()
+
+
+@pytest.mark.parametrize("name", list(CHARACTERS))
+def test_every_character_ascii_art_is_single_line(name: str) -> None:
+    assert "\n" not in CHARACTERS[name].ascii_art
+
+
+def test_get_character_default_returns_cat() -> None:
+    assert get_character() == CHARACTERS["cat"]
+
+
+def test_get_character_none_returns_cat() -> None:
+    assert get_character(None) == CHARACTERS["cat"]
+
+
+def test_get_character_known_name_returns_matching_character() -> None:
+    assert get_character("dog") == CHARACTERS["dog"]
+
+
+def test_get_character_returns_character_dataclass_instance() -> None:
+    assert isinstance(get_character("cat"), Character)
+
+
+def test_get_character_unknown_name_raises_value_error_listing_available() -> None:
+    with pytest.raises(ValueError, match=r"Unknown character: dragon\. Available: .*cat.*") as exc:
+        get_character("dragon")
+
+    message = str(exc.value)
+    for name in CHARACTERS:
+        assert name in message

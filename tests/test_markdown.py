@@ -212,3 +212,41 @@ def test_missing_folder_returns_empty(tmp_path):
 def test_no_pinned_notes_defaults_to_empty_list(tmp_path):
     src = MarkdownSource(folder=tmp_path, today=TODAY)
     assert src.pinned_notes == []
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform does not support symlinks")
+def test_symlinked_md_in_folder_pointing_outside_is_not_scanned(tmp_path):
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    secret = outside_dir / "private_key.md"
+    _touch(secret, "- [ ] leaked secret\n", TODAY)
+
+    folder = tmp_path / "vault"
+    folder.mkdir()
+    link = folder / "linked.md"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        pytest.skip("platform/user cannot create symlinks")
+
+    src = MarkdownSource(folder=folder, today=TODAY)
+    assert src.get_todos() == []
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform does not support symlinks")
+def test_pinned_symlink_still_works(tmp_path):
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    target = outside_dir / "real_note.md"
+    _touch(target, "- [ ] pinned via symlink\n", YESTERDAY)
+
+    folder = tmp_path / "vault"
+    folder.mkdir()
+    link = folder / "linked.md"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("platform/user cannot create symlinks")
+
+    src = MarkdownSource(folder=folder, pinned_notes=["linked.md"], today=TODAY)
+    assert [t.text for t in src.get_todos()] == ["pinned via symlink"]

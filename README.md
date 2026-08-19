@@ -4,8 +4,8 @@
 
 A character that reminds you of today's todos — in your terminal and on your desktop.
 
-**Status: WIP.** M1 (core CLI) and M2 (markdown/Obsidian source + `todoy init`) are done.
-The TUI character and the macOS overlay are on the [roadmap](docs/requirements.md#milestones).
+**Status: WIP.** M1 (core CLI), M2 (markdown/Obsidian source + `todoy init`), and
+M3 (`todoy tui`) are done. The macOS overlay is next on the [roadmap](docs/requirements.md#milestones).
 
 ## What works today
 
@@ -62,9 +62,30 @@ $ uv run todoy list  # or: todoy list (inside the venv)
 
 PyPI packaging (`pipx install todoy` / `uv tool install todoy`) arrives in M5.
 
+### Meet the character (`todoy tui`)
+
+A character delivers today's todos in a speech bubble — with a gentle dose of taunting:
+
+```console
+$ todoy tui
+.--------------------------------------------------.
+| 3 todos and counting. No pressure. (Some pressure.) |
+| [#1] buy milk                                    |
+| * prepare the meeting                            |
+| * call the bank                                  |
+`--------------------------------------------------'
+  /
+🐱
+```
+
+- `todoy tui --brief` prints a single line — drop it in your `.zshrc` / `.bashrc`
+  to get nagged by every new terminal: `🐱 3 todos: buy milk (+2 more)`
+- `--character cat|dog|ghost|robot`, `--lang en|ko`, `--ascii` for emoji-free terminals.
+- Messages tease your todos, never you. The character reminds — finishing them is still your job.
+
 ## Roadmap
 
-- **M3** — `todoy tui`: a character greets you with today's todos in a speech bubble; `--brief` mode for your shell rc
+
 - **M4** — `todoy overlay`: a floating desktop character (macOS first) with periodic reminders and snooze
 - **M5** — Release: full docs, MIT license, CI, PyPI
 
