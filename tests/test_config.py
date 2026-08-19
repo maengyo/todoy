@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+import re
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+from todoy.config import (
+    DEFAULT_INTERVAL_MINUTES,
+    Config,
+    build_sources,
+    config_path,
+    load_config,
+    save_config,
+)
+from todoy.models import Todo
+from todoy.sources.base import Source
+from todoy.sources.builtin import BuiltinSource
+
+
+def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
+    config = load_config(tmp_path / "missing" / "config.toml")
+
+    assert config == Config()
+    assert config.enabled_sources == ["builtin"]
+    assert config.markdown_folder is None
+    assert config.markdown_pinned == []
+    assert config.reminder_interval_minutes == DEFAULT_INTERVAL_MINUTES
+
+
+def test_config_path_todoy_config_file_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override = tmp_path / "custom.toml"
+    monkeypatch.setenv("TODOY_CONFIG_FILE", str(override))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert config_path() == override
+
+
+def test_config_path_uses_xdg_config_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("TODOY_CONFIG_FILE", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert config_path() == tmp_path / "xdg" / "todoy" / "config.toml"
+
+
+def test_config_path_falls_back_to_home_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("TODOY_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert config_path() == tmp_path / ".config" / "todoy" / "config.toml"
+
+
+def test_load_config_reads_schema_and_expands_markdown_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[general]
+reminder_interval_minutes = 45
+
+[sources]
+enabled = ["markdown", "builtin"]
+
+[sources.markdown]
+folder = "~/notes"
+pinned_notes = ["Todo.md", "nested/Work.md"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert load_config(path) == Config(
+        enabled_sources=["markdown", "builtin"],
+        markdown_folder=tmp_path / "notes",
+        markdown_pinned=["Todo.md", "nested/Work.md"],
+        reminder_interval_minutes=45,
+    )
+
+
+def test_load_config_wraps_corrupt_toml_with_path(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[general\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"Corrupt config file at {re.escape(str(path))}:"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        """
+[general]
+reminder_interval_minutes = "x"
+""",
+        """
+[sources]
+enabled = "builtin"
+""",
+        """
+[sources.markdown]
+folder = 123
+""",
+        """
+[sources.markdown]
+pinned_notes = ["Todo.md", 123]
+""",
+    ],
+)
+def test_load_config_wraps_wrong_types_with_path(tmp_path: Path, body: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(body.lstrip(), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"Corrupt config file at {re.escape(str(path))}:"):
+        load_config(path)
+
+
+def test_save_config_creates_parent_dirs_and_round_trips_escaped_strings(
+    tmp_path: Path,
+) -> None:
+    config = Config(
+        enabled_sources=["builtin", "markdown"],
+        markdown_folder=Path('C:\\Users\\me\\Notes "daily"'),
+        markdown_pinned=['Todo "now".md', "nested\\Inbox.md"],
+        reminder_interval_minutes=15,
+    )
+    path = tmp_path / "nested" / "config.toml"
+
+    assert save_config(config, path) == path
+    assert load_config(path) == config
+
+
+def test_save_config_round_trips_del_control_character(tmp_path: Path) -> None:
+    config = Config(
+        enabled_sources=["builtin", "markdown"],
+        markdown_folder=Path("notes\x7ftail"),
+        markdown_pinned=["Pinned.md"],
+    )
+    path = tmp_path / "config.toml"
+
+    save_config(config, path)
+
+    assert load_config(path) == config
+
+
+def test_save_config_omits_markdown_table_when_markdown_is_not_enabled(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    save_config(Config(), path)
+
+    assert "[sources.markdown]" not in path.read_text(encoding="utf-8")
+
+
+def test_build_sources_builds_builtin_without_importing_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "todoy.sources.markdown", raising=False)
+
+    sources = build_sources(Config(enabled_sources=["builtin"]))
+
+    assert len(sources) == 1
+    assert isinstance(sources[0], BuiltinSource)
+    assert sources[0].name == "builtin"
+    assert "todoy.sources.markdown" not in sys.modules
+
+
+def test_build_sources_orders_builtin_before_markdown_with_lazy_import(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class FakeMarkdownSource(Source):
+        name = "markdown"
+
+        def __init__(self, folder: Path, pinned_notes: list[str] | None = None) -> None:
+            self.folder = folder
+            self.pinned_notes = pinned_notes
+
+        def get_todos(self) -> list[Todo]:
+            return []
+
+    fake_module = types.ModuleType("todoy.sources.markdown")
+    fake_module.MarkdownSource = FakeMarkdownSource
+    monkeypatch.setitem(sys.modules, "todoy.sources.markdown", fake_module)
+
+    config = Config(
+        enabled_sources=["markdown", "builtin"],
+        markdown_folder=tmp_path / "notes",
+        markdown_pinned=["Todo.md"],
+    )
+
+    sources = build_sources(config)
+
+    assert [source.name for source in sources] == ["builtin", "markdown"]
+    assert isinstance(sources[0], BuiltinSource)
+    assert isinstance(sources[1], FakeMarkdownSource)
+    assert sources[1].folder == tmp_path / "notes"
+    assert sources[1].pinned_notes == ["Todo.md"]
+
+
+def test_build_sources_rejects_unknown_source_name() -> None:
+    with pytest.raises(ValueError, match="Unknown source name: other"):
+        build_sources(Config(enabled_sources=["builtin", "other"]))
+
+
+def test_build_sources_rejects_markdown_without_folder() -> None:
+    with pytest.raises(
+        ValueError,
+        match="^markdown source enabled but no folder configured$",
+    ):
+        build_sources(Config(enabled_sources=["markdown"]))

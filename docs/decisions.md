@@ -24,6 +24,21 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 
 - Milestones are developed test-first (TDD) and cross-reviewed by two independent reviewers before merge (M1: 31 tests, ruff-clean).
 
+## M2 — 2026-08-20
+
+### Decisions
+
+- **Config.** `~/.config/todoy/config.toml` (override order: `TODOY_CONFIG_FILE` env → `$XDG_CONFIG_HOME/todoy/config.toml` → `~/.config/todoy/config.toml`). Read with stdlib `tomllib`; written by a small hand-rolled emitter (stdlib has no TOML writer, and minimal dependencies win over adding `tomli-w`).
+- **Markdown source.** A file contributes todos if its mtime date is today or it is pinned in config. Line rules: `- [ ] text` and `- text` are open todos, `- [x]` is excluded; dedup by text, pinned files first. Fenced code blocks / YAML frontmatter are not special-cased yet (#10).
+- **`add`/`done` always target the builtin store** regardless of which sources are enabled — predictable UX; read-only sources are aggregated only in `list` (and later TUI/overlay).
+- **Output sanitization pulled forward from #7.** Markdown notes are untrusted input that now reaches the terminal, so all rendered todo text is stripped of control/escape characters as of M2.
+- Validated against a real Obsidian vault during development (Korean todos, nested folders, pinned note) — the vault path stays out of code, tests, and fixtures.
+
+### Modifications from cross-review
+
+- Config emitter: escape U+007F (DEL) in TOML strings — save/load round-trip could otherwise produce a file todoy itself could not parse.
+- Deferred minors filed as issues: markdown parser robustness (#10), CLI hardening additions (#6).
+
 ## Post-M1 — 2026-08-20
 
 - **LICENSE added ahead of schedule.** At the user's request, the MIT `LICENSE` file (standard text, copyright maengyo) was added now instead of waiting for M5; `pyproject.toml` already carried `license = "MIT"` (PEP 639 SPDX expression), and adding the file makes hatchling emit `License-Expression: MIT` + `License-File: LICENSE` in built metadata. Verified via `uv build`, `uv sync`, and the full test suite (31 passed, ruff clean).

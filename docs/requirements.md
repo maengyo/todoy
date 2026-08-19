@@ -26,6 +26,14 @@ An open-source CLI tool that keeps you from forgetting the day's todos you jotte
 - `todoy tui` — an emoji/ASCII character prints today's todos in a speech bubble in the terminal. Cross-platform (macOS/Linux/Windows). A compact mode (`todoy tui --brief`) suitable for `.zshrc` so it greets every new terminal.
 - `todoy overlay` — a transparent floating character window that lives on the desktop (macOS first, pyobjc). Shows a reminder bubble on a configurable interval (default 30 min); click to snooze/dismiss/quit. The display layer is separated so other OS backends can be added later.
 
+### Character & interaction principles (added 2026-08-20)
+
+- **Customizable character.** The user can replace the character: use their own image (e.g. a photo) or pick one of the bundled copyright-free characters. Selected via config / `todoy init`.
+- **The character only passes by.** It reminds and teases, but never completes todos for the user, and there is no in-app button to permanently silence it — turning it off requires the user to edit the config themselves (deliberate friction; snooze stays temporary).
+- **Taunting tone.** Reminder messages playfully needle the user about unfinished todos (message pack, en/ko), and the character's entrances carry the same teasing feel.
+- **Pinned files.** Specific files inside a folder can be designated as todo sources — covered by the markdown source's `pinned_notes` config.
+- **Live demo in README.** A recording of the real app (TUI + overlay) is embedded in the GitHub README (M5).
+
 ### CLI
 
 `todoy init` (interactive setup) / `add` / `done` / `list` / `tui` / `overlay`. Python 3.11+, `pyproject.toml`-based, minimal dependencies.
