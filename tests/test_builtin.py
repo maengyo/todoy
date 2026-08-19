@@ -127,6 +127,32 @@ def test_corrupt_json_raises_valueerror_with_path(tmp_path):
     assert str(path) in str(excinfo.value)
 
 
+def test_json_valid_but_wrong_field_types_raises_valueerror_with_path(tmp_path):
+    # JSON-valid file, but "id" is a string instead of an int — must be treated as
+    # corrupt data, not crash downstream (e.g. in add()'s max(...) + 1) with a raw TypeError.
+    path = tmp_path / "todos.json"
+    path.write_text(
+        json.dumps({"todos": [{"id": "abc", "text": "x", "done": False, "source": "builtin"}]}),
+        encoding="utf-8",
+    )
+    src = BuiltinSource(path=path)
+    with pytest.raises(ValueError) as excinfo:
+        src.list_todos()
+    assert str(path) in str(excinfo.value)
+
+
+def test_add_on_file_with_wrong_field_types_raises_valueerror_not_typeerror(tmp_path):
+    path = tmp_path / "todos.json"
+    path.write_text(
+        json.dumps({"todos": [{"id": "abc", "text": "x", "done": False, "source": "builtin"}]}),
+        encoding="utf-8",
+    )
+    src = BuiltinSource(path=path)
+    with pytest.raises(ValueError) as excinfo:
+        src.add("y")
+    assert str(path) in str(excinfo.value)
+
+
 def test_storage_file_format(tmp_path):
     path = tmp_path / "todos.json"
     src = BuiltinSource(path=path)

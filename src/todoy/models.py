@@ -25,9 +25,26 @@ class Todo:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Todo:
-        return cls(
-            text=d["text"],
-            done=d.get("done", False),
-            id=d.get("id"),
-            source=d.get("source", "builtin"),
-        )
+        if "text" not in d:
+            raise ValueError("Todo dict missing required 'text' field")
+        text = d["text"]
+        if not isinstance(text, str):
+            raise ValueError(f"Todo 'text' must be a string, got {type(text).__name__}: {text!r}")
+
+        done = d.get("done", False)
+        if not isinstance(done, bool):
+            raise ValueError(f"Todo 'done' must be a bool, got {type(done).__name__}: {done!r}")
+
+        todo_id = d.get("id")
+        if todo_id is not None and (isinstance(todo_id, bool) or not isinstance(todo_id, int)):
+            raise ValueError(
+                f"Todo 'id' must be an int or None, got {type(todo_id).__name__}: {todo_id!r}"
+            )
+
+        source = d.get("source", "builtin")
+        if not isinstance(source, str):
+            raise ValueError(
+                f"Todo 'source' must be a string, got {type(source).__name__}: {source!r}"
+            )
+
+        return cls(text=text, done=done, id=todo_id, source=source)

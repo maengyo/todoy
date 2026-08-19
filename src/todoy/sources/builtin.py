@@ -76,7 +76,7 @@ class BuiltinSource(Source):
 
         try:
             return [Todo.from_dict(d) for d in data["todos"]]
-        except (KeyError, TypeError) as e:
+        except (KeyError, TypeError, ValueError) as e:
             raise ValueError(f"Corrupt todos file at {self.path}: {e}") from e
 
     def _save(self, todos: list[Todo]) -> None:
