@@ -267,12 +267,11 @@ def test_init_wizard_invalid_interval_reprompts_once_then_defaults(
 
 
 def test_init_wizard_writes_custom_display_settings(
-    tmp_path: Path,
+    fake_home: Path,
     config_file: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
     fake_input = FakeInput(["n", "15", "robot", "~/robot.png"])
     monkeypatch.setattr("builtins.input", fake_input)
 
@@ -291,7 +290,7 @@ def test_init_wizard_writes_custom_display_settings(
     assert load_config(config_file) == Config(
         reminder_interval_minutes=15,
         character="robot",
-        character_image=tmp_path / "robot.png",
+        character_image=fake_home / "robot.png",
     )
 
 

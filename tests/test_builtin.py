@@ -192,10 +192,9 @@ def test_default_path_uses_xdg_data_home(tmp_path, monkeypatch):
     assert expected.exists()
 
 
-def test_default_path_falls_back_to_home(tmp_path, monkeypatch):
+def test_default_path_falls_back_to_home(fake_home, monkeypatch):
     monkeypatch.delenv("TODOY_DATA_FILE", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
     src = BuiltinSource()
-    expected = tmp_path / ".local" / "share" / "todoy" / "todos.json"
+    expected = fake_home / ".local" / "share" / "todoy" / "todos.json"
     assert src.path == expected
