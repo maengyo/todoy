@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 import types
 from pathlib import Path
 
@@ -213,7 +214,7 @@ def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert "[display]" in text
     assert 'character = "robot"' in text
-    assert f'character_image = "{tmp_path / "robot.png"}"' in text
+    assert tomllib.loads(text)["display"]["character_image"] == str(tmp_path / "robot.png")
     assert "snooze_minutes = 12" in text
     assert load_config(path) == config
 
