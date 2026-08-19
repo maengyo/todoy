@@ -14,9 +14,6 @@ dependencies = []
 [project.scripts]
 todoy = "todoy.cli:main"
 
-[project.optional-dependencies]
-overlay = ["pyobjc"]
-
 [dependency-groups]
 dev = ["pytest", "ruff"]
 
