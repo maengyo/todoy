@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import sys
 import types
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +12,7 @@ import pytest
 from todoy.cli import main
 from todoy.config import DEFAULT_INTERVAL_MINUTES, Config, load_config, save_config
 from todoy.display import sanitize_text
+from todoy.models import Todo
 from todoy.sources.builtin import BuiltinSource
 
 
@@ -51,6 +52,45 @@ class FakeCharacter:
     ascii_art: str
 
 
+@dataclass(frozen=True)
+class FakeOverlayOptions:
+    character: FakeCharacter
+    character_image: Path | None
+    language: str
+    test_seconds: float | None
+
+
+class FakeReminderScheduler:
+    def __init__(self, interval_minutes: int, snooze_minutes: int) -> None:
+        self.interval_minutes = interval_minutes
+        self.snooze_minutes = snooze_minutes
+
+
+@dataclass
+class FakeOverlayState:
+    exit_code: int = 0
+    backend_calls: int = 0
+    options: FakeOverlayOptions | None = None
+    scheduler: FakeReminderScheduler | None = None
+    reminder_text: str | None = None
+
+
+class FakeOverlayBackend:
+    def __init__(self, state: FakeOverlayState) -> None:
+        self._state = state
+
+    def run(
+        self,
+        options: FakeOverlayOptions,
+        scheduler: FakeReminderScheduler,
+        get_reminder_text: Callable[[], str],
+    ) -> int:
+        self._state.options = options
+        self._state.scheduler = scheduler
+        self._state.reminder_text = get_reminder_text()
+        return self._state.exit_code
+
+
 def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     messages = types.ModuleType("todoy.display.messages")
 
@@ -86,10 +126,48 @@ def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("todoy.cli.resolve_language", resolve_language)
 
 
+def install_fake_overlay_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    backend_error: RuntimeError | None = None,
+    exit_code: int = 0,
+) -> FakeOverlayState:
+    state = FakeOverlayState(exit_code=exit_code)
+
+    core = types.ModuleType("todoy.display.overlay.core")
+
+    def build_reminder_text(
+        todos: list[Todo],
+        language: str,
+        rng: random.Random | None = None,
+    ) -> str:
+        del rng
+        texts = ", ".join(sanitize_text(todo.text) for todo in todos)
+        return f"{language}: {texts or 'empty'}"
+
+    core.ReminderScheduler = FakeReminderScheduler
+    core.build_reminder_text = build_reminder_text
+    monkeypatch.setitem(sys.modules, "todoy.display.overlay.core", core)
+
+    base = types.ModuleType("todoy.display.overlay.base")
+
+    def create_backend() -> FakeOverlayBackend:
+        state.backend_calls += 1
+        if backend_error is not None:
+            raise backend_error
+        return FakeOverlayBackend(state)
+
+    base.OverlayOptions = FakeOverlayOptions
+    base.create_backend = create_backend
+    monkeypatch.setitem(sys.modules, "todoy.display.overlay.base", base)
+
+    return state
+
+
 def test_init_wizard_builtin_only_writes_default_config(
     config_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    fake_input = FakeInput(["n", ""])
+    fake_input = FakeInput(["n", "", "", ""])
     monkeypatch.setattr("builtins.input", fake_input)
 
     exit_code = main(["init"])
@@ -99,6 +177,8 @@ def test_init_wizard_builtin_only_writes_default_config(
     assert fake_input.prompts == [
         "Enable markdown source? [y/N]",
         "Reminder interval in minutes [30]:",
+        "Character [cat/dog/ghost/robot] (default cat):",
+        "Custom character image path (optional):",
     ]
     assert captured.out == f"Config written to {config_file}\n"
     assert captured.err == ""
@@ -119,6 +199,8 @@ def test_init_wizard_with_markdown_writes_folder_and_pinned_notes(
             str(notes_folder),
             "Pinned.md, nested/Now.md",
             "45",
+            "",
+            "",
         ]
     )
     monkeypatch.setattr("builtins.input", fake_input)
@@ -132,6 +214,8 @@ def test_init_wizard_with_markdown_writes_folder_and_pinned_notes(
         "Notes folder path:",
         "Pinned notes (comma-separated, optional):",
         "Reminder interval in minutes [30]:",
+        "Character [cat/dog/ghost/robot] (default cat):",
+        "Custom character image path (optional):",
     ]
     assert captured.out == f"Config written to {config_file}\n"
     assert captured.err == ""
@@ -163,7 +247,7 @@ def test_init_wizard_overwrite_no_aborts(
 def test_init_wizard_invalid_interval_reprompts_once_then_defaults(
     config_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    fake_input = FakeInput(["n", "soon", "later"])
+    fake_input = FakeInput(["n", "soon", "later", "", ""])
     monkeypatch.setattr("builtins.input", fake_input)
 
     exit_code = main(["init"])
@@ -174,10 +258,63 @@ def test_init_wizard_invalid_interval_reprompts_once_then_defaults(
         "Enable markdown source? [y/N]",
         "Reminder interval in minutes [30]:",
         "Reminder interval in minutes [30]:",
+        "Character [cat/dog/ghost/robot] (default cat):",
+        "Custom character image path (optional):",
     ]
     assert captured.out == f"Config written to {config_file}\n"
     assert captured.err == ""
     assert load_config(config_file).reminder_interval_minutes == DEFAULT_INTERVAL_MINUTES
+
+
+def test_init_wizard_writes_custom_display_settings(
+    tmp_path: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake_input = FakeInput(["n", "15", "robot", "~/robot.png"])
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    exit_code = main(["init"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert fake_input.prompts == [
+        "Enable markdown source? [y/N]",
+        "Reminder interval in minutes [30]:",
+        "Character [cat/dog/ghost/robot] (default cat):",
+        "Custom character image path (optional):",
+    ]
+    assert captured.out == f"Config written to {config_file}\n"
+    assert captured.err == ""
+    assert load_config(config_file) == Config(
+        reminder_interval_minutes=15,
+        character="robot",
+        character_image=tmp_path / "robot.png",
+    )
+
+
+def test_init_wizard_invalid_character_reprompts_once_then_defaults(
+    config_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_input = FakeInput(["n", "", "dragon", "koala", ""])
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    exit_code = main(["init"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert fake_input.prompts == [
+        "Enable markdown source? [y/N]",
+        "Reminder interval in minutes [30]:",
+        "Character [cat/dog/ghost/robot] (default cat):",
+        "Character [cat/dog/ghost/robot] (default cat):",
+        "Custom character image path (optional):",
+    ]
+    assert captured.out == f"Config written to {config_file}\n"
+    assert captured.err == ""
+    assert load_config(config_file).character == "cat"
 
 
 def test_add_prints_contract_message_and_persists(
@@ -478,3 +615,106 @@ def test_tui_config_error_prints_stderr_and_exits_1(
     assert captured.err == "Unknown source name: not-a-source\n"
     assert "Traceback" not in captured.err
     assert not data_file.exists()
+
+
+def test_overlay_once_prints_reminder_text_without_backend(
+    tmp_path: Path,
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notes_folder = tmp_path / "notes"
+    notes_folder.mkdir()
+    (notes_folder / "Pinned.md").write_text("- markdown task\n", encoding="utf-8")
+    save_config(
+        Config(
+            enabled_sources=["builtin", "markdown"],
+            markdown_folder=notes_folder,
+            markdown_pinned=["Pinned.md"],
+        ),
+        config_file,
+    )
+    main(["add", "builtin task"])
+    capsys.readouterr()
+    monkeypatch.delitem(sys.modules, "todoy.display.overlay.core", raising=False)
+    monkeypatch.delitem(sys.modules, "todoy.display.overlay.base", raising=False)
+
+    exit_code = main(["overlay", "--once", "--lang", "ko"])
+
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert exit_code == 0
+    assert len(lines) == 4
+    assert lines[0]
+    assert lines[1:] == ["", "[#1] builtin task", "* markdown task"]
+    assert captured.err == ""
+    assert (
+        sys.modules["todoy.display.overlay.core"].build_reminder_text.__module__
+        == "todoy.display.overlay.core"
+    )
+    assert "todoy.display.overlay.base" not in sys.modules
+    assert data_file.exists()
+
+
+def test_overlay_backend_runtime_error_prints_stderr_and_exits_1(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    state = install_fake_overlay_modules(
+        monkeypatch,
+        backend_error=RuntimeError("todoy overlay currently supports macOS only"),
+    )
+
+    exit_code = main(["overlay"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "todoy overlay currently supports macOS only\n"
+    assert state.backend_calls == 1
+    assert not data_file.exists()
+
+
+def test_overlay_gui_wires_config_env_and_backend_exit_code(
+    tmp_path: Path,
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch, exit_code=23)
+    image_path = tmp_path / "robot.png"
+    save_config(
+        Config(
+            reminder_interval_minutes=99,
+            character="robot",
+            character_image=image_path,
+            snooze_minutes=8,
+        ),
+        config_file,
+    )
+    monkeypatch.setenv("TODOY_OVERLAY_TEST_SECONDS", "1.5")
+    main(["add", "builtin task"])
+    capsys.readouterr()
+
+    exit_code = main(["overlay", "--interval", "7", "--lang", "ko"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 23
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.backend_calls == 1
+    assert state.options is not None
+    assert state.options.character.name == "robot"
+    assert state.options.character_image == image_path
+    assert state.options.language == "ko"
+    assert state.options.test_seconds == 1.5
+    assert state.scheduler is not None
+    assert state.scheduler.interval_minutes == 7
+    assert state.scheduler.snooze_minutes == 8
+    assert state.reminder_text == "ko: builtin task"
+    assert data_file.exists()

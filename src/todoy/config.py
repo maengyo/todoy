@@ -12,6 +12,8 @@ from todoy.sources.base import Source
 from todoy.sources.builtin import BuiltinSource
 
 DEFAULT_INTERVAL_MINUTES = 30
+DEFAULT_CHARACTER = "cat"
+DEFAULT_SNOOZE_MINUTES = 5
 
 
 @dataclass
@@ -20,6 +22,9 @@ class Config:
     markdown_folder: Path | None = None
     markdown_pinned: list[str] = field(default_factory=list)
     reminder_interval_minutes: int = DEFAULT_INTERVAL_MINUTES
+    character: str = DEFAULT_CHARACTER
+    character_image: Path | None = None
+    snooze_minutes: int = DEFAULT_SNOOZE_MINUTES
 
 
 def config_path() -> Path:
@@ -104,11 +109,24 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         "sources.markdown.pinned_notes",
     )
 
+    display = _optional_table(data, "display")
+    character = _string(display.get("character", DEFAULT_CHARACTER), "display.character")
+    character_image = _optional_display_image_path(
+        display.get("character_image"),
+        "display.character_image",
+    )
+    snooze_minutes = display.get("snooze_minutes", DEFAULT_SNOOZE_MINUTES)
+    if isinstance(snooze_minutes, bool) or not isinstance(snooze_minutes, int):
+        raise ValueError("display.snooze_minutes must be an int")
+
     return Config(
         enabled_sources=enabled_sources,
         markdown_folder=markdown_folder,
         markdown_pinned=markdown_pinned,
         reminder_interval_minutes=reminder_interval_minutes,
+        character=character,
+        character_image=character_image,
+        snooze_minutes=snooze_minutes,
     )
 
 
@@ -125,6 +143,18 @@ def _optional_path(value: Any, key: str) -> Path | None:
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
     return Path(value).expanduser()
+
+
+def _optional_display_image_path(value: Any, key: str) -> Path | None:
+    if value in (None, ""):
+        return None
+    return _optional_path(value, key)
+
+
+def _string(value: Any, key: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return value
 
 
 def _string_list(value: Any, key: str) -> list[str]:
@@ -155,6 +185,17 @@ def _config_to_toml(config: Config) -> str:
             lines.append(f"folder = {_toml_string(str(config.markdown_folder))}")
         lines.append(f"pinned_notes = {_toml_string_array(config.markdown_pinned)}")
 
+    if _should_emit_display_table(config):
+        lines.extend(
+            [
+                "",
+                "[display]",
+                f"character = {_toml_string(config.character)}",
+                f"character_image = {_toml_string(_display_image_value(config))}",
+                f"snooze_minutes = {config.snooze_minutes}",
+            ]
+        )
+
     return "\n".join(lines) + "\n"
 
 
@@ -164,6 +205,20 @@ def _should_emit_markdown_table(config: Config) -> bool:
         or config.markdown_folder is not None
         or bool(config.markdown_pinned)
     )
+
+
+def _should_emit_display_table(config: Config) -> bool:
+    return (
+        config.character != DEFAULT_CHARACTER
+        or config.character_image is not None
+        or config.snooze_minutes != DEFAULT_SNOOZE_MINUTES
+    )
+
+
+def _display_image_value(config: Config) -> str:
+    if config.character_image is None:
+        return ""
+    return str(config.character_image)
 
 
 def _toml_string_array(values: list[str]) -> str:

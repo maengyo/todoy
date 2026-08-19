@@ -54,6 +54,23 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M4 — 2026-08-20
+
+### Decisions
+
+- **Overlay architecture.** `display/overlay/` splits a pure-Python core (`ReminderScheduler` on a monotonic clock, `build_reminder_text`) from a thin pyobjc backend (`macos.py`) behind an `OverlayBackend` protocol + `create_backend()` factory — other OS backends can be added beside it; AppKit is imported lazily and only on the GUI path.
+- **Dependency.** `todoy[overlay]` extra = `pyobjc-framework-Cocoa` only (not the full pyobjc umbrella).
+- **Product rules enforced in code.** The bubble offers exactly two controls — temporary snooze and quit; no permanent mute and no "complete todo" button (deliberate friction). The character wanders along the bottom of the screen and fires a first reminder ~5s after launch.
+- **Config.** New `[display]` table: `character`, `character_image` (user image wins over the emoji when set/readable), `snooze_minutes`. `todoy init` asks for both character and optional image.
+- **`todoy overlay --once`** prints the reminder text without any GUI — works on every OS, used for demos/tests/CI.
+- **Verification.** Automated checks cover AppKit window state and clean exits (`TODOY_OVERLAY_TEST_SECONDS`); pixel-level screenshots are blocked in the sandboxed dev environment (macOS TCC), so final visual sign-off is a manual step.
+
+### Modifications from cross-review
+
+- macOS backend stores and invalidates all NSTimers on quit/test-timeout (was: leaked scheduled timers on repeated runs).
+- Added Korean wide-char truncation coverage and subprocess tests asserting `todoy.display.overlay` imports never pull in AppKit.
+- CLI `--once` test now exercises the real overlay core instead of fakes (integration seam).
+
 ## Post-M1 — 2026-08-20
 
 - **LICENSE added ahead of schedule.** At the user's request, the MIT `LICENSE` file (standard text, copyright maengyo) was added now instead of waiting for M5; `pyproject.toml` already carried `license = "MIT"` (PEP 639 SPDX expression), and adding the file makes hatchling emit `License-Expression: MIT` + `License-File: LICENSE` in built metadata. Verified via `uv build`, `uv sync`, and the full test suite (31 passed, ruff clean).

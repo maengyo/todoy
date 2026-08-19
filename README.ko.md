@@ -5,7 +5,8 @@
 오늘의 할 일을 까먹지 않게 해주는 캐릭터 — 터미널에서도, 데스크톱에서도.
 
 **상태: 개발 중.** M1(코어 CLI), M2(마크다운/Obsidian 소스 + `todoy init`),
-M3(`todoy tui`)가 완료됐습니다. 다음은 macOS 오버레이입니다 ([로드맵](docs/requirements.ko.md#마일스톤)).
+M3(`todoy tui`), M4(`todoy overlay`, macOS)가 완료됐습니다 — 남은 건 릴리스 준비(M5)입니다
+([로드맵](docs/requirements.ko.md#마일스톤)).
 
 ## 지금 되는 것
 
@@ -82,11 +83,30 @@ $ todoy tui
 - `--character cat|dog|ghost|robot`, `--lang en|ko`, 이모지 없는 터미널엔 `--ascii`.
 - 메시지는 할 일을 놀리지, 당신을 공격하지 않습니다. 캐릭터는 알려줄 뿐 — 끝내는 건 여전히 당신 몫.
 
+### 데스크톱 위의 캐릭터 (`todoy overlay`, macOS)
+
+```console
+$ uv sync --extra overlay   # 또는: pip install -e '.[overlay]'
+$ todoy overlay
+```
+
+투명한 캐릭터가 화면 하단을 배회하다가, 설정한 주기(기본 30분,
+`[general] reminder_interval_minutes`)마다 오늘의 할 일을 말풍선으로 띄웁니다.
+말풍선 버튼은 **스누즈**(일시)와 **종료** 둘뿐 — 일부러 그렇게 만들었습니다:
+캐릭터는 할 일을 대신 완료해주지 않고, 영구 음소거 버튼도 없습니다. 완전히
+끄려면 직접 config를 고쳐야 합니다. 이 귀찮음이 기능입니다.
+
+- 캐릭터를 내 이미지로 교체: `~/.config/todoy/config.toml`의 `character_image`
+  설정(또는 `todoy init` 질문에 답하기).
+- `todoy overlay --once`는 GUI 없이 리마인드 텍스트만 출력합니다
+  (모든 OS에서 동작 — 스크립트·미리보기용).
+- 다른 플랫폼: display 레이어는 플러그인 구조입니다. Linux/Windows 오버레이
+  백엔드 기여를 환영합니다.
+
 ## 로드맵
 
 
-- **M4** — `todoy overlay`: 데스크톱 플로팅 캐릭터(macOS 우선), 주기 알림과 스누즈
-- **M5** — 릴리스: 전체 문서, MIT 라이선스, CI, PyPI
+- **M5** — 릴리스: CI, PyPI 배포(`pipx install todoy`), 데모 녹화
 
 자세히: [docs/requirements.ko.md](docs/requirements.ko.md) ·
 결정/변경 기록: [docs/decisions.ko.md](docs/decisions.ko.md)

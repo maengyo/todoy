@@ -4,8 +4,9 @@
 
 A character that reminds you of today's todos — in your terminal and on your desktop.
 
-**Status: WIP.** M1 (core CLI), M2 (markdown/Obsidian source + `todoy init`), and
-M3 (`todoy tui`) are done. The macOS overlay is next on the [roadmap](docs/requirements.md#milestones).
+**Status: WIP.** M1 (core CLI), M2 (markdown/Obsidian source + `todoy init`),
+M3 (`todoy tui`), and M4 (`todoy overlay`, macOS) are done — release prep (M5) is
+what's left on the [roadmap](docs/requirements.md#milestones).
 
 ## What works today
 
@@ -83,11 +84,31 @@ $ todoy tui
 - `--character cat|dog|ghost|robot`, `--lang en|ko`, `--ascii` for emoji-free terminals.
 - Messages tease your todos, never you. The character reminds — finishing them is still your job.
 
+### A character on your desktop (`todoy overlay`, macOS)
+
+```console
+$ uv sync --extra overlay   # or: pip install -e '.[overlay]'
+$ todoy overlay
+```
+
+A transparent character wanders along the bottom of your screen and pops a
+speech bubble with today's todos on your configured interval (default 30 min,
+`[general] reminder_interval_minutes`). The bubble offers **Snooze** (temporary)
+and **Quit** — that's all, on purpose: the character never completes todos for
+you, and there is no permanent mute button. To silence it for good you have to
+edit your config yourself. Deliberate friction is the feature.
+
+- Replace the character with your own image: set `character_image` in
+  `~/.config/todoy/config.toml` (or answer the `todoy init` prompt).
+- `todoy overlay --once` prints the reminder text to stdout without any GUI
+  (works on every OS — handy for scripts and previews).
+- Other platforms: the display layer is pluggable; overlay backends for
+  Linux/Windows are welcome contributions.
+
 ## Roadmap
 
 
-- **M4** — `todoy overlay`: a floating desktop character (macOS first) with periodic reminders and snooze
-- **M5** — Release: full docs, MIT license, CI, PyPI
+- **M5** — Release: CI, PyPI packaging (`pipx install todoy`), demo recording
 
 Details: [docs/requirements.md](docs/requirements.md) ·
 decisions & changes: [docs/decisions.md](docs/decisions.md)

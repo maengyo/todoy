@@ -28,6 +28,9 @@ def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
     assert config.markdown_folder is None
     assert config.markdown_pinned == []
     assert config.reminder_interval_minutes == DEFAULT_INTERVAL_MINUTES
+    assert config.character == "cat"
+    assert config.character_image is None
+    assert config.snooze_minutes == 5
 
 
 def test_config_path_todoy_config_file_wins(
@@ -85,6 +88,41 @@ pinned_notes = ["Todo.md", "nested/Work.md"]
     )
 
 
+def test_load_config_reads_display_schema_and_expands_image_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[display]
+character = "robot"
+character_image = "~/robot.png"
+snooze_minutes = 9
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert load_config(path) == Config(
+        character="robot",
+        character_image=tmp_path / "robot.png",
+        snooze_minutes=9,
+    )
+
+
+def test_load_config_treats_empty_display_image_as_none(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[display]
+character_image = ""
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert load_config(path).character_image is None
+
+
 def test_load_config_wraps_corrupt_toml_with_path(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("[general\n", encoding="utf-8")
@@ -111,6 +149,21 @@ folder = 123
         """
 [sources.markdown]
 pinned_notes = ["Todo.md", 123]
+""",
+        """
+display = "not-a-table"
+""",
+        """
+[display]
+character = 123
+""",
+        """
+[display]
+character_image = 123
+""",
+        """
+[display]
+snooze_minutes = "soon"
 """,
     ],
 )
@@ -150,12 +203,40 @@ def test_save_config_round_trips_del_control_character(tmp_path: Path) -> None:
     assert load_config(path) == config
 
 
+def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
+    config = Config(
+        character="robot",
+        character_image=tmp_path / "robot.png",
+        snooze_minutes=12,
+    )
+    path = tmp_path / "config.toml"
+
+    save_config(config, path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "[display]" in text
+    assert 'character = "robot"' in text
+    assert f'character_image = "{tmp_path / "robot.png"}"' in text
+    assert "snooze_minutes = 12" in text
+    assert load_config(path) == config
+
+
 def test_save_config_omits_markdown_table_when_markdown_is_not_enabled(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
 
     save_config(Config(), path)
 
     assert "[sources.markdown]" not in path.read_text(encoding="utf-8")
+
+
+def test_save_config_omits_display_table_when_display_settings_are_default(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+
+    save_config(Config(), path)
+
+    assert "[display]" not in path.read_text(encoding="utf-8")
 
 
 def test_build_sources_builds_builtin_without_importing_markdown(

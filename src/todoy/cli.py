@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
 from todoy.config import (
+    DEFAULT_CHARACTER,
     DEFAULT_INTERVAL_MINUTES,
     Config,
     build_sources,
@@ -51,6 +54,12 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init")
     init_parser.set_defaults(handler=_init)
 
+    overlay_parser = subparsers.add_parser("overlay")
+    overlay_parser.add_argument("--interval", type=int, metavar="MINUTES")
+    overlay_parser.add_argument("--lang", choices=("en", "ko"))
+    overlay_parser.add_argument("--once", action="store_true")
+    overlay_parser.set_defaults(handler=_overlay)
+
     return parser
 
 
@@ -78,10 +87,15 @@ def _done(args: argparse.Namespace, source: BuiltinSource) -> int:
     return 0
 
 
-def _collect_todos(*, include_done: bool) -> tuple[list[Todo], list[Todo]]:
+def _collect_todos(
+    *,
+    include_done: bool,
+    config: Config | None = None,
+) -> tuple[list[Todo], list[Todo]]:
     builtin_todos: list[Todo] = []
     non_builtin_todos: list[Todo] = []
-    for configured_source in build_sources(load_config()):
+    source_config = config if config is not None else load_config()
+    for configured_source in build_sources(source_config):
         if isinstance(configured_source, BuiltinSource):
             builtin_todos.extend(configured_source.list_todos(include_done=include_done))
         else:
@@ -151,6 +165,8 @@ def _init(args: argparse.Namespace, source: BuiltinSource) -> int:
         markdown_folder=markdown_folder,
         markdown_pinned=markdown_pinned,
         reminder_interval_minutes=_prompt_reminder_interval(),
+        character=_prompt_character(),
+        character_image=_prompt_character_image_path(),
     )
     written_path = save_config(config, path)
     print(f"Config written to {written_path}")
@@ -182,6 +198,72 @@ def _prompt_reminder_interval() -> int:
         except ValueError:
             pass
     return DEFAULT_INTERVAL_MINUTES
+
+
+def _prompt_character() -> str:
+    for _ in range(2):
+        raw_character = input("Character [cat/dog/ghost/robot] (default cat):").strip()
+        if not raw_character:
+            return DEFAULT_CHARACTER
+        try:
+            return get_character(raw_character).name
+        except ValueError:
+            pass
+    return DEFAULT_CHARACTER
+
+
+def _prompt_character_image_path() -> Path | None:
+    raw_path = input("Custom character image path (optional):").strip()
+    if not raw_path:
+        return None
+    return Path(raw_path).expanduser()
+
+
+def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
+    del source
+
+    config = load_config()
+    language = resolve_language(args.lang)
+    interval_minutes = (
+        args.interval if args.interval is not None else config.reminder_interval_minutes
+    )
+
+    core_module = importlib.import_module("todoy.display.overlay.core")
+    build_reminder_text = core_module.build_reminder_text
+
+    if args.once:
+        builtin_todos, non_builtin_todos = _collect_todos(include_done=False, config=config)
+        print(build_reminder_text([*builtin_todos, *non_builtin_todos], language))
+        return 0
+
+    base_module = importlib.import_module("todoy.display.overlay.base")
+    character = get_character(config.character)
+    scheduler = core_module.ReminderScheduler(interval_minutes, config.snooze_minutes)
+    options = base_module.OverlayOptions(
+        character=character,
+        character_image=config.character_image,
+        language=language,
+        test_seconds=_overlay_test_seconds(),
+    )
+
+    try:
+        backend = base_module.create_backend()
+    except RuntimeError as exc:
+        print(sanitize_text(str(exc)), file=sys.stderr)
+        return 1
+
+    def get_reminder_text() -> str:
+        builtin_todos, non_builtin_todos = _collect_todos(include_done=False, config=config)
+        return build_reminder_text([*builtin_todos, *non_builtin_todos], language)
+
+    return backend.run(options, scheduler, get_reminder_text)
+
+
+def _overlay_test_seconds() -> float | None:
+    raw_value = os.environ.get("TODOY_OVERLAY_TEST_SECONDS")
+    if raw_value is None or not raw_value.strip():
+        return None
+    return float(raw_value)
 
 
 def main(argv: list[str] | None = None) -> int:

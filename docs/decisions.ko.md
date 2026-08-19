@@ -54,6 +54,23 @@
 - 마크다운 소스가 폴더 스캔 중 심볼릭 링크 파일을 읽지 않도록 수정(폴더 밖을 가리키는 링크가 파일 내용을 todo로 유출할 수 있었음); 고정(pinned) 노트는 예외(명시적 사용자 설정).
 - CLI의 범용 에러 출력도 새니타이즈 — `--character` 에러 메시지가 제어 문자를 stderr에 반사하지 않음.
 
+## M4 — 2026-08-20
+
+### 결정
+
+- **오버레이 아키텍처.** `display/overlay/`를 순수 파이썬 코어(`ReminderScheduler` monotonic 클록, `build_reminder_text`)와 얇은 pyobjc 백엔드(`macos.py`)로 분리, `OverlayBackend` 프로토콜 + `create_backend()` 팩토리 뒤에 배치 — 다른 OS 백엔드를 옆에 추가 가능; AppKit은 GUI 경로에서만 lazy import.
+- **의존성.** `todoy[overlay]` extra = `pyobjc-framework-Cocoa`만 (전체 pyobjc 아님).
+- **제품 규칙을 코드로 강제.** 말풍선 컨트롤은 정확히 둘 — 일시 스누즈와 종료. 영구 음소거 없음, "할 일 완료" 버튼 없음(의도적 마찰). 캐릭터는 화면 하단을 배회하고 실행 ~5초 후 첫 리마인드를 띄움.
+- **Config.** 새 `[display]` 테이블: `character`, `character_image`(설정되고 읽을 수 있으면 이모지보다 사용자 이미지 우선), `snooze_minutes`. `todoy init`이 캐릭터와 선택적 이미지를 질문.
+- **`todoy overlay --once`** — GUI 없이 리마인드 텍스트만 출력. 모든 OS에서 동작, 데모/테스트/CI용.
+- **검증.** 자동 검증은 AppKit 창 상태와 정상 종료까지(`TODOY_OVERLAY_TEST_SECONDS`); 픽셀 스크린샷은 샌드박스 개발 환경(macOS TCC)에서 차단되어 최종 육안 확인은 수동 단계.
+
+### 교차 리뷰 반영 수정
+
+- macOS 백엔드가 모든 NSTimer를 저장하고 종료/테스트 타임아웃 시 invalidate (기존: 반복 실행 시 타이머 누수).
+- 한글 전각 잘림 테스트와, `todoy.display.overlay` import가 AppKit을 끌어오지 않음을 검증하는 서브프로세스 테스트 추가.
+- CLI `--once` 테스트가 가짜 모듈 대신 실제 overlay 코어를 사용 (통합 경계 검증).
+
 ## M1 이후 — 2026-08-20
 
 - **LICENSE 파일을 M5보다 앞당겨 추가.** 사용자 요청으로 MIT `LICENSE` 파일(표준 원문, 저작권자 maengyo)을 M5를 기다리지 않고 지금 추가했다. `pyproject.toml`에는 이미 `license = "MIT"` (PEP 639 SPDX 표현식)이 있었고, LICENSE 파일 추가로 hatchling이 빌드 메타데이터에 `License-Expression: MIT` + `License-File: LICENSE`를 포함하게 됐다. `uv build`, `uv sync`, 전체 테스트 스위트(31개 통과, ruff 통과)로 검증했다.
