@@ -19,3 +19,6 @@ venv/
 .mypy_cache/
 .coverage
 htmlcov/
+
+# Scratch data/config used by demo/demo.tape recordings — never commit.
+demo/demo-tmp/

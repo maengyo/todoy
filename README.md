@@ -5,8 +5,36 @@
 A character that reminds you of today's todos — in your terminal and on your desktop.
 
 **Status: WIP.** M1 (core CLI), M2 (markdown/Obsidian source + `todoy init`),
-M3 (`todoy tui`), and M4 (`todoy overlay`, macOS) are done — release prep (M5) is
-what's left on the [roadmap](docs/requirements.md#milestones).
+M3 (`todoy tui`), M4 (`todoy overlay`, macOS), and M5 (release prep: CI, PyPI
+packaging, docs) are done — see the [roadmap](docs/requirements.md#milestones).
+No version has been published to PyPI yet; install from source for now (below).
+
+## Demo
+
+<!-- ![todoy demo](demo/todoy.gif) — uncomment when recorded -->
+<!-- ![todoy overlay demo](demo/overlay.gif) — uncomment when recorded -->
+
+CLI/TUI and macOS-overlay recordings aren't made yet — see
+[docs/demo.md](docs/demo.md) for how they'll be recorded (`vhs demo/demo.tape`
+and a macOS screen recording) and where they'll land (`demo/todoy.gif`,
+`demo/overlay.gif`). Every command shown in this README works today
+regardless.
+
+## Install (from source, for now)
+
+Requires Python 3.11+.
+
+```console
+$ git clone https://github.com/maengyo/todoy.git
+$ cd todoy
+$ uv sync            # or: pip install -e .
+$ uv run todoy list  # or: todoy list (inside the venv)
+```
+
+PyPI packaging is wired up (`pipx install todoy` / `uv tool install todoy` —
+see [`.github/workflows/release.yml`](.github/workflows/release.yml)), but no
+version has been published yet, so install from source until the first
+tagged release lands.
 
 ## What works today
 
@@ -49,19 +77,6 @@ $ todoy list
   - prepare the meeting
   - call the bank
 ```
-
-## Install (from source, for now)
-
-Requires Python 3.11+.
-
-```console
-$ git clone https://github.com/maengyo/todoy.git
-$ cd todoy
-$ uv sync            # or: pip install -e .
-$ uv run todoy list  # or: todoy list (inside the venv)
-```
-
-PyPI packaging (`pipx install todoy` / `uv tool install todoy`) arrives in M5.
 
 ### Meet the character (`todoy tui`)
 
@@ -107,8 +122,8 @@ edit your config yourself. Deliberate friction is the feature.
 
 ## Roadmap
 
-
-- **M5** — Release: CI, PyPI packaging (`pipx install todoy`), demo recording
+M1–M5 are all implemented. What's left is operational, not code: tag and
+push the first release so CI actually publishes it to PyPI.
 
 Details: [docs/requirements.md](docs/requirements.md) ·
 decisions & changes: [docs/decisions.md](docs/decisions.md)
@@ -119,9 +134,14 @@ decisions & changes: [docs/decisions.md](docs/decisions.md)
 $ uv sync
 $ uv run pytest
 $ uv run ruff check .
+$ uv run ruff format --check .
 ```
 
-Contributions welcome once the plugin interface stabilizes (post-M2).
+CI (`.github/workflows/ci.yml`) runs the same checks on Linux/macOS/Windows
+for Python 3.11 and 3.13 on every push and pull request.
+
+Contributions welcome — the source-plugin interface (`src/todoy/sources/`,
+see `Source` in `base.py`) stabilized in M2.
 
 ## License
 

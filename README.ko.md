@@ -5,8 +5,34 @@
 오늘의 할 일을 까먹지 않게 해주는 캐릭터 — 터미널에서도, 데스크톱에서도.
 
 **상태: 개발 중.** M1(코어 CLI), M2(마크다운/Obsidian 소스 + `todoy init`),
-M3(`todoy tui`), M4(`todoy overlay`, macOS)가 완료됐습니다 — 남은 건 릴리스 준비(M5)입니다
-([로드맵](docs/requirements.ko.md#마일스톤)).
+M3(`todoy tui`), M4(`todoy overlay`, macOS), M5(릴리스 준비: CI, PyPI 배포, 문서)까지
+완료됐습니다 — [로드맵](docs/requirements.ko.md#마일스톤) 참고. 아직 PyPI에 배포된
+버전은 없으니, 지금은 아래처럼 소스에서 설치하세요.
+
+## 데모
+
+<!-- ![todoy 데모](demo/todoy.gif) — 녹화되면 주석 해제 -->
+<!-- ![todoy 오버레이 데모](demo/overlay.gif) — 녹화되면 주석 해제 -->
+
+CLI/TUI와 macOS 오버레이 녹화는 아직 준비되지 않았습니다 — 어떻게 녹화할지
+(`vhs demo/demo.tape`, macOS 화면 녹화)와 어디에 저장될지(`demo/todoy.gif`,
+`demo/overlay.gif`)는 [docs/demo.ko.md](docs/demo.ko.md)를 참고하세요. 이
+README에 나오는 명령어들은 지금도 모두 그대로 동작합니다.
+
+## 설치 (지금은 소스에서)
+
+Python 3.11+ 필요.
+
+```console
+$ git clone https://github.com/maengyo/todoy.git
+$ cd todoy
+$ uv sync            # 또는: pip install -e .
+$ uv run todoy list  # 또는 venv 안에서: todoy list
+```
+
+PyPI 배포 자동화는 준비됐지만(`pipx install todoy` / `uv tool install todoy` —
+[`.github/workflows/release.yml`](.github/workflows/release.yml) 참고), 아직
+배포된 버전이 없습니다. 첫 태그 릴리스가 나올 때까지는 소스에서 설치하세요.
 
 ## 지금 되는 것
 
@@ -48,19 +74,6 @@ $ todoy list
   - 회의 준비
   - 은행 전화
 ```
-
-## 설치 (지금은 소스에서)
-
-Python 3.11+ 필요.
-
-```console
-$ git clone https://github.com/maengyo/todoy.git
-$ cd todoy
-$ uv sync            # 또는: pip install -e .
-$ uv run todoy list  # 또는 venv 안에서: todoy list
-```
-
-PyPI 배포(`pipx install todoy` / `uv tool install todoy`)는 M5에서 제공됩니다.
 
 ### 캐릭터 만나기 (`todoy tui`)
 
@@ -105,8 +118,8 @@ $ todoy overlay
 
 ## 로드맵
 
-
-- **M5** — 릴리스: CI, PyPI 배포(`pipx install todoy`), 데모 녹화
+M1~M5가 모두 구현됐습니다. 남은 건 코드가 아니라 운영 작업입니다: 첫 릴리스에
+태그를 달고 푸시하면 CI가 실제로 PyPI에 배포합니다.
 
 자세히: [docs/requirements.ko.md](docs/requirements.ko.md) ·
 결정/변경 기록: [docs/decisions.ko.md](docs/decisions.ko.md)
@@ -117,9 +130,14 @@ $ todoy overlay
 $ uv sync
 $ uv run pytest
 $ uv run ruff check .
+$ uv run ruff format --check .
 ```
 
-플러그인 인터페이스가 안정화되면(M2 이후) 기여를 환영합니다.
+CI(`.github/workflows/ci.yml`)가 매 push/pull request마다 Linux/macOS/Windows,
+Python 3.11·3.13 조합으로 동일한 검사를 돌립니다.
+
+기여를 환영합니다 — 소스 플러그인 인터페이스(`src/todoy/sources/`, `base.py`의
+`Source`)는 M2에서 안정화됐습니다.
 
 ## 라이선스
 

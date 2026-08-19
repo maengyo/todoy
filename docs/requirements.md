@@ -49,9 +49,9 @@ An open-source CLI tool that keeps you from forgetting the day's todos you jotte
 | # | Scope | Status |
 |---|-------|--------|
 | M1 | Project skeleton (pyproject, git, tests) + `Todo` model + builtin source + `add`/`done`/`list` CLI | ✅ Done (2026-08-20) |
-| M2 | Markdown source (Obsidian-vault compatible) + `todoy init` wizard | Planned |
-| M3 | TUI character (cross-platform, `--brief` mode) | Planned |
-| M4 | macOS overlay character (periodic reminders, snooze) | Planned |
-| M5 | Release prep: README, MIT license, GitHub Actions CI, PyPI packaging, demo GIF | Planned |
+| M2 | Markdown source (Obsidian-vault compatible) + `todoy init` wizard | ✅ Done (2026-08-20) |
+| M3 | TUI character (cross-platform, `--brief` mode) | ✅ Done (2026-08-20) |
+| M4 | macOS overlay character (periodic reminders, snooze) | ✅ Done (2026-08-20) |
+| M5 | Release prep: README, MIT license, GitHub Actions CI, PyPI packaging, demo GIF | ✅ Done (2026-08-20, pending first tagged PyPI publish) |
 
 Each milestone is developed test-first (TDD) and merges only after cross-review.

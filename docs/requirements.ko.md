@@ -49,9 +49,9 @@
 | # | 범위 | 상태 |
 |---|------|------|
 | M1 | 프로젝트 뼈대(pyproject, git, 테스트) + `Todo` 모델 + builtin 소스 + `add`/`done`/`list` CLI | ✅ 완료 (2026-08-20) |
-| M2 | 마크다운 소스 (Obsidian vault 호환) + `todoy init` 마법사 | 예정 |
-| M3 | TUI 캐릭터 (크로스 플랫폼, `--brief` 모드) | 예정 |
-| M4 | macOS 오버레이 캐릭터 (주기 알림, 스누즈) | 예정 |
-| M5 | 릴리스 준비: README, MIT 라이선스, GitHub Actions CI, PyPI 배포, 데모 GIF | 예정 |
+| M2 | 마크다운 소스 (Obsidian vault 호환) + `todoy init` 마법사 | ✅ 완료 (2026-08-20) |
+| M3 | TUI 캐릭터 (크로스 플랫폼, `--brief` 모드) | ✅ 완료 (2026-08-20) |
+| M4 | macOS 오버레이 캐릭터 (주기 알림, 스누즈) | ✅ 완료 (2026-08-20) |
+| M5 | 릴리스 준비: README, MIT 라이선스, GitHub Actions CI, PyPI 배포, 데모 GIF | ✅ 완료 (2026-08-20, 첫 PyPI 태그 배포는 보류) |
 
 각 마일스톤은 TDD로 진행하며, 교차 리뷰 통과 후에만 머지한다.

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    # Windows' console encoding isn't UTF-8 by default, and todoy prints
+    # emoji/Korean text (character messages, --lang ko); force UTF-8 stdio on
+    # every OS so those tests don't fail only on windows-latest.
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - run: uv sync --dev
+
+      # pyobjc only builds on macOS; only sync/import the overlay extra there.
+      - if: runner.os == 'macOS'
+        run: uv sync --dev --extra overlay
+      - if: runner.os == 'macOS'
+        run: uv run python -c "import todoy.display.overlay.base"
+
+      - run: uv run pytest -q
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
