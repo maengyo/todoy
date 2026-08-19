@@ -39,6 +39,11 @@ class ReminderScheduler:
         snooze_minutes: int,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
+        if interval_minutes <= 0:
+            raise ValueError("reminder interval must be a positive number of minutes")
+        if snooze_minutes <= 0:
+            raise ValueError("snooze duration must be a positive number of minutes")
+
         self.interval_minutes = interval_minutes
         self.snooze_minutes = snooze_minutes
         self._now = now

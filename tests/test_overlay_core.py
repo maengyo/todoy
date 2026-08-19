@@ -109,6 +109,38 @@ def test_scheduler_uses_time_monotonic_by_default() -> None:
     assert scheduler.seconds_until_fire() == pytest.approx(30 * 60, abs=1)
 
 
+# --- ReminderScheduler input validation --------------------------------------
+
+
+def test_scheduler_rejects_zero_interval_minutes() -> None:
+    with pytest.raises(ValueError, match="reminder interval must be a positive number of minutes"):
+        ReminderScheduler(interval_minutes=0, snooze_minutes=5)
+
+
+def test_scheduler_rejects_negative_interval_minutes() -> None:
+    with pytest.raises(ValueError, match="reminder interval must be a positive number of minutes"):
+        ReminderScheduler(interval_minutes=-5, snooze_minutes=5)
+
+
+def test_scheduler_rejects_zero_snooze_minutes() -> None:
+    with pytest.raises(ValueError, match="snooze duration must be a positive number of minutes"):
+        ReminderScheduler(interval_minutes=30, snooze_minutes=0)
+
+
+def test_scheduler_rejects_negative_snooze_minutes() -> None:
+    with pytest.raises(ValueError, match="snooze duration must be a positive number of minutes"):
+        ReminderScheduler(interval_minutes=30, snooze_minutes=-1)
+
+
+def test_scheduler_zero_interval_never_fires_continuously_once_rejected() -> None:
+    # Regression for the reported bug: interval_minutes=0 used to be accepted
+    # and should_fire() returned True immediately after every fired() call,
+    # so reminders fired on every ~1s poll tick instead of once per interval.
+    # Construction must now fail fast instead of producing that broken state.
+    with pytest.raises(ValueError):
+        ReminderScheduler(interval_minutes=0, snooze_minutes=5)
+
+
 # --- build_reminder_text -----------------------------------------------------
 
 
