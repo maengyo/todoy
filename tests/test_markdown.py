@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -133,7 +134,13 @@ def test_dot_directory_skipped(tmp_path):
     assert src.get_todos() == []
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: -1)() == 0,
+    reason=(
+        "chmod(0o000) doesn't block owner-read on Windows (no POSIX permission "
+        "bits), and running as root ignores permissions entirely on POSIX"
+    ),
+)
 def test_unreadable_file_skipped(tmp_path):
     readable = tmp_path / "readable.md"
     _touch(readable, "- [ ] visible task\n", TODAY)
