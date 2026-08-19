@@ -23,3 +23,8 @@
 ### 프로세스
 
 - 마일스톤은 TDD로 진행하고, 머지 전 독립 리뷰어 2인의 교차 리뷰를 통과한다 (M1: 테스트 31개, ruff 통과).
+
+## M1 이후 — 2026-08-20
+
+- **LICENSE 파일을 M5보다 앞당겨 추가.** 사용자 요청으로 MIT `LICENSE` 파일(표준 원문, 저작권자 maengyo)을 M5를 기다리지 않고 지금 추가했다. `pyproject.toml`에는 이미 `license = "MIT"` (PEP 639 SPDX 표현식)이 있었고, LICENSE 파일 추가로 hatchling이 빌드 메타데이터에 `License-Expression: MIT` + `License-File: LICENSE`를 포함하게 됐다. `uv build`, `uv sync`, 전체 테스트 스위트(31개 통과, ruff 통과)로 검증했다.
+- **의존성 라이선스 검토(license-compliance-expert).** 런타임 의존성 없음. dev 전용 의존성인 pytest(MIT), ruff(MIT)와 그 전이 의존성 colorama(BSD-3-Clause), iniconfig(MIT), packaging(Apache-2.0 OR BSD-2-Clause), pluggy(MIT), pygments(BSD-2-Clause) 모두 permissive 라이선스로 MIT 배포와 호환되며 copyleft 없음 — blocker 없음.

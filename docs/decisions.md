@@ -23,3 +23,8 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 ### Process
 
 - Milestones are developed test-first (TDD) and cross-reviewed by two independent reviewers before merge (M1: 31 tests, ruff-clean).
+
+## Post-M1 — 2026-08-20
+
+- **LICENSE added ahead of schedule.** At the user's request, the MIT `LICENSE` file (standard text, copyright maengyo) was added now instead of waiting for M5; `pyproject.toml` already carried `license = "MIT"` (PEP 639 SPDX expression), and adding the file makes hatchling emit `License-Expression: MIT` + `License-File: LICENSE` in built metadata. Verified via `uv build`, `uv sync`, and the full test suite (31 passed, ruff clean).
+- **Dependency license check (license-compliance-expert).** No runtime dependencies. Dev-only deps: pytest (MIT) and ruff (MIT), with transitives colorama (BSD-3-Clause), iniconfig (MIT), packaging (Apache-2.0 OR BSD-2-Clause), pluggy (MIT), pygments (BSD-2-Clause). All permissive, MIT-compatible, no copyleft — no blockers.

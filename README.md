@@ -59,4 +59,8 @@ $ uv run pytest
 $ uv run ruff check .
 ```
 
-Contributions welcome once the plugin interface stabilizes (post-M2). License: MIT (file lands in M5).
+Contributions welcome once the plugin interface stabilizes (post-M2).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
