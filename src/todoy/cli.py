@@ -21,14 +21,12 @@ from todoy.config import (
 from todoy.display import sanitize_text
 from todoy.display.characters import get_character
 from todoy.display.messages import resolve_language
+from todoy.display.overlay.animations import BUBBLE_EFFECTS, MESSAGE_STYLES, MOVEMENTS
 from todoy.display.tui import render_tui
 from todoy.models import Todo
 from todoy.sources.builtin import BuiltinSource
 
 CommandHandler = Callable[[argparse.Namespace, BuiltinSource], int]
-MOVEMENT_CHOICES = ("walk", "hop", "float", "dash", "still")
-BUBBLE_EFFECT_CHOICES = ("pop", "fade", "slide", "shake", "none")
-MESSAGE_STYLE_CHOICES = ("bubble", "flag")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -61,9 +59,10 @@ def _build_parser() -> argparse.ArgumentParser:
     overlay_parser.add_argument("--interval", type=int, metavar="MINUTES")
     overlay_parser.add_argument("--lang", choices=("en", "ko"))
     overlay_parser.add_argument("--once", action="store_true")
-    overlay_parser.add_argument("--movement", choices=MOVEMENT_CHOICES)
-    overlay_parser.add_argument("--bubble-effect", choices=BUBBLE_EFFECT_CHOICES)
-    overlay_parser.add_argument("--message-style", choices=MESSAGE_STYLE_CHOICES)
+    overlay_parser.add_argument("--character", metavar="NAME")
+    overlay_parser.add_argument("--movement", choices=MOVEMENTS)
+    overlay_parser.add_argument("--bubble-effect", choices=BUBBLE_EFFECTS)
+    overlay_parser.add_argument("--message-style", choices=MESSAGE_STYLES)
     overlay_parser.set_defaults(handler=_overlay)
 
     return parser
@@ -253,7 +252,7 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
         return 0
 
     base_module = importlib.import_module("todoy.display.overlay.base")
-    character = get_character(config.character)
+    character = get_character(args.character if args.character is not None else config.character)
     scheduler = core_module.ReminderScheduler(interval_minutes, config.snooze_minutes)
     options = base_module.OverlayOptions(
         character=character,

@@ -45,22 +45,47 @@ CHARACTER_WINDOW_SIZE = 110.0
 EMOJI_FONT_SIZE = 64.0
 CHARACTER_BOTTOM_MARGIN = 24.0
 
-BUBBLE_WIDTH = 300.0
-BUBBLE_TEXT_HEIGHT = 120.0
-BUBBLE_BUTTON_ROW_HEIGHT = 40.0
-BUBBLE_PADDING = 12.0
+BUBBLE_WIDTH = 320.0
+BUBBLE_TEXT_HEIGHT = 132.0
+BUBBLE_BUTTON_ROW_HEIGHT = 44.0
+BUBBLE_PADDING = 18.0
 BUBBLE_HEIGHT = BUBBLE_TEXT_HEIGHT + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING * 2
-BUBBLE_GAP_ABOVE_CHARACTER = 8.0
+BUBBLE_GAP_ABOVE_CHARACTER = 6.0
 
-# `flag` message style: same panel content as the bubble, plus a thin pole
-# drawn inside the view's left edge that visually connects down toward the
-# character. The window is taller than the bubble by the pole's height; the
-# panel itself occupies the top `BUBBLE_HEIGHT` px, the pole the bottom strip.
-FLAG_POLE_HEIGHT = 28.0
+PANEL_CORNER_RADIUS = 16.0
+PANEL_FILL_ALPHA = 0.97
+PANEL_BORDER_ALPHA = 0.55
+
+# A real drawn speech-bubble tail (NSBezierPath), pointing straight down at
+# the character below. The window is taller than the panel by the tail's
+# height; the panel occupies the top `BUBBLE_HEIGHT` px, the tail the bottom
+# strip, centered on the panel's (and the character's) x.
+BUBBLE_TAIL_HEIGHT = 12.0
+BUBBLE_TAIL_WIDTH = 22.0
+
+# `flag` message style: same panel content as the bubble, but drawn as a
+# pennant (a swallow-tail notch cut into the panel's right edge) flying from
+# a pole drawn inside the view's left edge that visually connects down
+# toward the character. The window is taller than the panel by the pole's
+# height; the panel occupies the top `BUBBLE_HEIGHT` px, the pole the bottom
+# strip.
+FLAG_POLE_HEIGHT = 30.0
 FLAG_POLE_WIDTH = 4.0
-FLAG_POLE_INSET = 18.0
+FLAG_POLE_INSET = 8.0
 FLAG_GAP_ABOVE_CHARACTER = 2.0
-FLAG_PANEL_CORNER_RADIUS = 12.0
+FLAG_NOTCH_DEPTH = 10.0
+FLAG_NOTCH_HEIGHT = 16.0
+
+# Buttons: Snooze is the prominent accent action, Quit is a quiet text button.
+BUTTON_HEIGHT = 30.0
+BUTTON_CORNER_RADIUS = 8.0
+SNOOZE_BUTTON_WIDTH = 140.0
+QUIT_BUTTON_WIDTH = 76.0
+
+# The notch sits level with the button row, inside the empty padding strip
+# to the right of the Quit button (which stops `BUBBLE_PADDING` short of the
+# panel's right edge) -- so it never overlaps the text or the buttons.
+FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM = BUBBLE_PADDING + BUTTON_HEIGHT / 2.0
 
 
 class MacOSOverlayBackend:
@@ -297,7 +322,7 @@ class _OverlayController(AppKit.NSObject):
         assert self.bubble_window is not None
         assert self.bubble_text_field is not None
         self._cancel_bubble_shake()
-        self.bubble_text_field.setStringValue_(text)
+        self.bubble_text_field.setAttributedStringValue_(_build_reminder_attributed_text(text))
         self._refresh_message_base_origin()
         self._apply_message_window_frame()
         self._apply_bubble_entrance_effect()
@@ -306,8 +331,8 @@ class _OverlayController(AppKit.NSObject):
     @objc.python_method
     def _build_bubble_window(self) -> None:
         is_flag = self.options.message_style == "flag"
-        pole_height = FLAG_POLE_HEIGHT if is_flag else 0.0
-        window_height = BUBBLE_HEIGHT + pole_height
+        panel_bottom = FLAG_POLE_HEIGHT if is_flag else BUBBLE_TAIL_HEIGHT
+        window_height = BUBBLE_HEIGHT + panel_bottom
 
         frame = Foundation.NSMakeRect(0, 0, BUBBLE_WIDTH, window_height)
         window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -318,30 +343,22 @@ class _OverlayController(AppKit.NSObject):
         )
         window.setOpaque_(False)
         window.setBackgroundColor_(AppKit.NSColor.clearColor())
+        window.setHasShadow_(True)
         window.setLevel_(AppKit.NSFloatingWindowLevel)
         window.setCollectionBehavior_(
             AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
             | AppKit.NSWindowCollectionBehaviorStationary
         )
 
-        if is_flag:
-            content = _FlagView.alloc().initWithFrame_(frame)
-            content.pole_height = pole_height
-            content.pole_inset = FLAG_POLE_INSET
-            content.pole_width = FLAG_POLE_WIDTH
-        else:
-            content = AppKit.NSView.alloc().initWithFrame_(frame)
-            content.setWantsLayer_(True)
-            content.layer().setBackgroundColor_(
-                AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(0.97).CGColor()
-            )
-            content.layer().setCornerRadius_(FLAG_PANEL_CORNER_RADIUS)
+        content = _MessagePanelView.alloc().initWithFrame_(frame)
+        content.style = "flag" if is_flag else "bubble"
+        content.panel_bottom = panel_bottom
+        content.pole_inset = FLAG_POLE_INSET
+        content.pole_width = FLAG_POLE_WIDTH
 
         # Both styles share the same panel content (text + Snooze/Quit),
-        # just shifted up by `pole_height` (0 for the plain bubble) to make
-        # room for the flag's pole strip at the bottom of the view.
-        panel_bottom = pole_height
-
+        # just shifted up by `panel_bottom` (the flag's pole strip, or the
+        # bubble's tail) at the bottom of the view.
         text_field = AppKit.NSTextField.alloc().initWithFrame_(
             Foundation.NSMakeRect(
                 BUBBLE_PADDING,
@@ -354,22 +371,26 @@ class _OverlayController(AppKit.NSObject):
         text_field.setSelectable_(False)
         text_field.setBezeled_(False)
         text_field.setDrawsBackground_(False)
-        text_field.setFont_(AppKit.NSFont.systemFontOfSize_(13.0))
         text_field.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
         text_field.cell().setWraps_(True)
         content.addSubview_(text_field)
 
         snooze_label = f"Snooze {self.scheduler.snooze_minutes}m"
-        snooze_button = _make_button(
+        snooze_button = _make_primary_button(
             snooze_label,
-            Foundation.NSMakeRect(BUBBLE_PADDING, panel_bottom + BUBBLE_PADDING, 130, 28),
+            Foundation.NSMakeRect(
+                BUBBLE_PADDING, panel_bottom + BUBBLE_PADDING, SNOOZE_BUTTON_WIDTH, BUTTON_HEIGHT
+            ),
             self,
             "onSnoozeClicked:",
         )
-        quit_button = _make_button(
+        quit_button = _make_quiet_button(
             "Quit",
             Foundation.NSMakeRect(
-                BUBBLE_WIDTH - BUBBLE_PADDING - 80, panel_bottom + BUBBLE_PADDING, 80, 28
+                BUBBLE_WIDTH - BUBBLE_PADDING - QUIT_BUTTON_WIDTH,
+                panel_bottom + BUBBLE_PADDING,
+                QUIT_BUTTON_WIDTH,
+                BUTTON_HEIGHT,
             ),
             self,
             "onQuitClicked:",
@@ -603,58 +624,226 @@ def _animation_group(duration: float) -> Iterator[None]:
         AppKit.NSAnimationContext.endGrouping()
 
 
-def _make_button(
+def _make_primary_button(
     title: str,
     frame: AppKit.NSRect,
     target: AppKit.NSObject,
     selector: str,
 ) -> AppKit.NSButton:
+    """The prominent accent action (Snooze): a filled, rounded, accent-toned pill."""
     button = AppKit.NSButton.alloc().initWithFrame_(frame)
-    button.setTitle_(title)
-    button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+    button.setBordered_(False)
+    button.setButtonType_(AppKit.NSButtonTypeMomentaryChange)
+    button.setWantsLayer_(True)
+    button.layer().setBackgroundColor_(AppKit.NSColor.controlAccentColor().CGColor())
+    button.layer().setCornerRadius_(BUTTON_CORNER_RADIUS)
+    font = AppKit.NSFont.systemFontOfSize_weight_(13.0, AppKit.NSFontWeightSemibold)
+    attrs = {
+        AppKit.NSFontAttributeName: font,
+        AppKit.NSForegroundColorAttributeName: AppKit.NSColor.whiteColor(),
+    }
+    button.setAttributedTitle_(
+        AppKit.NSAttributedString.alloc().initWithString_attributes_(title, attrs)
+    )
     button.setTarget_(target)
     button.setAction_(selector)
     return button
 
 
-class _FlagView(AppKit.NSView):
-    """Message-window content for the `flag` style.
+def _make_quiet_button(
+    title: str,
+    frame: AppKit.NSRect,
+    target: AppKit.NSObject,
+    selector: str,
+) -> AppKit.NSButton:
+    """The secondary action (Quit): borderless, secondary-colored plain text."""
+    button = AppKit.NSButton.alloc().initWithFrame_(frame)
+    button.setBordered_(False)
+    button.setButtonType_(AppKit.NSButtonTypeMomentaryChange)
+    font = AppKit.NSFont.systemFontOfSize_weight_(13.0, AppKit.NSFontWeightRegular)
+    attrs = {
+        AppKit.NSFontAttributeName: font,
+        AppKit.NSForegroundColorAttributeName: AppKit.NSColor.secondaryLabelColor(),
+    }
+    button.setAttributedTitle_(
+        AppKit.NSAttributedString.alloc().initWithString_attributes_(title, attrs)
+    )
+    button.setTarget_(target)
+    button.setAction_(selector)
+    return button
+
+
+def _build_reminder_attributed_text(text: str) -> AppKit.NSAttributedString:
+    """Typographic hierarchy for the reminder panel's text field.
+
+    Line 0 (the taunt) is bold/larger and uses `labelColor`; a trailing
+    "(+N more)" line uses `secondaryLabelColor`; every other line (todo
+    items, and the blank spacer line `core.build_reminder_text` inserts) is
+    regular-weight `labelColor`. Content and line order are untouched -- only
+    per-line font/color attributes are applied.
+    """
+    taunt_font = AppKit.NSFont.systemFontOfSize_weight_(15.0, AppKit.NSFontWeightSemibold)
+    body_font = AppKit.NSFont.systemFontOfSize_weight_(13.0, AppKit.NSFontWeightRegular)
+
+    paragraph_style = AppKit.NSMutableParagraphStyle.alloc().init()
+    paragraph_style.setLineSpacing_(3.0)
+    paragraph_style.setParagraphSpacing_(2.0)
+
+    result = AppKit.NSMutableAttributedString.alloc().init()
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        is_taunt = index == 0
+        is_more_suffix = line.startswith("(+") and line.endswith("more)")
+        font = taunt_font if is_taunt else body_font
+        color = (
+            AppKit.NSColor.secondaryLabelColor() if is_more_suffix else AppKit.NSColor.labelColor()
+        )
+        chunk = line + ("\n" if index < len(lines) - 1 else "")
+        attrs = {
+            AppKit.NSFontAttributeName: font,
+            AppKit.NSForegroundColorAttributeName: color,
+            AppKit.NSParagraphStyleAttributeName: paragraph_style,
+        }
+        result.appendAttributedString_(
+            AppKit.NSAttributedString.alloc().initWithString_attributes_(chunk, attrs)
+        )
+    return result
+
+
+class _MessagePanelView(AppKit.NSView):
+    """Message-window content shared by both message styles.
 
     Draws a rounded-rect panel (holding the reminder text + buttons, added
-    as subviews by the caller) occupying the top `bounds.height - pole_height`
-    of the view, plus a thin pole strip inside the view's left edge running
-    from the panel's bottom down to the view's bottom edge -- the visual
-    connection down toward the character the flag rides next to.
+    as subviews by the caller) occupying the top `bounds.height - panel_bottom`
+    of the view, plus:
+    - `style == "bubble"`: a real speech-bubble tail (an `NSBezierPath`
+      triangle merged into the panel outline) pointing straight down at the
+      character below.
+    - `style == "flag"`: a swallow-tail pennant notch cut into the panel's
+      right edge, plus a thin pole strip inside the view's left edge running
+      from the panel's bottom down to the view's bottom edge -- the visual
+      connection down toward the character the flag rides next to.
     """
 
-    pole_height: float = 0.0
+    style: str = "bubble"
+    panel_bottom: float = 0.0
     pole_inset: float = 0.0
     pole_width: float = 0.0
 
     def drawRect_(self, rect: AppKit.NSRect) -> None:
         bounds = self.bounds()
-        fill_color = AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(0.97)
-        fill_color.setFill()
-
         panel_rect = Foundation.NSMakeRect(
             0.0,
-            self.pole_height,
+            self.panel_bottom,
             bounds.size.width,
-            bounds.size.height - self.pole_height,
+            bounds.size.height - self.panel_bottom,
         )
-        panel_path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            panel_rect, FLAG_PANEL_CORNER_RADIUS, FLAG_PANEL_CORNER_RADIUS
-        )
-        panel_path.fill()
 
-        if self.pole_height > 0.0:
-            pole_rect = Foundation.NSMakeRect(
-                self.pole_inset, 0.0, self.pole_width, self.pole_height
+        if self.style == "flag":
+            path = _pennant_path(
+                panel_rect,
+                PANEL_CORNER_RADIUS,
+                FLAG_NOTCH_DEPTH,
+                FLAG_NOTCH_HEIGHT,
+                FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM,
             )
+        else:
+            path = _bubble_tail_path(panel_rect, PANEL_CORNER_RADIUS, BUBBLE_TAIL_WIDTH)
+
+        AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(PANEL_FILL_ALPHA).setFill()
+        path.fill()
+
+        AppKit.NSColor.separatorColor().colorWithAlphaComponent_(PANEL_BORDER_ALPHA).setStroke()
+        path.setLineWidth_(1.0)
+        path.stroke()
+
+        if self.style == "flag" and self.panel_bottom > 0.0:
+            pole_rect = Foundation.NSMakeRect(
+                self.pole_inset, 0.0, self.pole_width, self.panel_bottom
+            )
+            AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(
+                PANEL_FILL_ALPHA
+            ).setFill()
             AppKit.NSBezierPath.bezierPathWithRect_(pole_rect).fill()
 
     def isFlipped(self) -> bool:
         return False
+
+
+def _bubble_tail_path(rect: AppKit.NSRect, radius: float, tail_width: float) -> AppKit.NSBezierPath:
+    """A rounded-rect outline with a triangular tail merged into the bottom
+    edge, centered on `rect`'s x, pointing down from `rect`'s bottom edge to
+    the view's origin (y=0) -- toward the character below.
+    """
+    min_x, min_y = rect.origin.x, rect.origin.y
+    max_x, max_y = min_x + rect.size.width, min_y + rect.size.height
+    mid_x = min_x + rect.size.width / 2.0
+    tail_half = tail_width / 2.0
+
+    path = AppKit.NSBezierPath.bezierPath()
+    path.moveToPoint_(Foundation.NSMakePoint(min_x + radius, max_y))
+    path.lineToPoint_(Foundation.NSMakePoint(max_x - radius, max_y))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(max_x - radius, max_y - radius), radius, 90.0, 0.0, True
+    )
+    path.lineToPoint_(Foundation.NSMakePoint(max_x, min_y + radius))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(max_x - radius, min_y + radius), radius, 0.0, -90.0, True
+    )
+    path.lineToPoint_(Foundation.NSMakePoint(mid_x + tail_half, min_y))
+    path.lineToPoint_(Foundation.NSMakePoint(mid_x, 0.0))
+    path.lineToPoint_(Foundation.NSMakePoint(mid_x - tail_half, min_y))
+    path.lineToPoint_(Foundation.NSMakePoint(min_x + radius, min_y))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(min_x + radius, min_y + radius), radius, -90.0, -180.0, True
+    )
+    path.lineToPoint_(Foundation.NSMakePoint(min_x, max_y - radius))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(min_x + radius, max_y - radius), radius, 180.0, 90.0, True
+    )
+    path.closePath()
+    return path
+
+
+def _pennant_path(
+    rect: AppKit.NSRect,
+    radius: float,
+    notch_depth: float,
+    notch_height: float,
+    notch_offset_from_bottom: float,
+) -> AppKit.NSBezierPath:
+    """A rounded-rect outline with a swallow-tail notch cut into the right
+    edge, level with the button row -- the pennant "flutter" flying from the
+    pole drawn separately at the view's left edge.
+    """
+    min_x, min_y = rect.origin.x, rect.origin.y
+    max_x, max_y = min_x + rect.size.width, min_y + rect.size.height
+    mid_y = min_y + notch_offset_from_bottom
+    notch_half = notch_height / 2.0
+
+    path = AppKit.NSBezierPath.bezierPath()
+    path.moveToPoint_(Foundation.NSMakePoint(min_x + radius, max_y))
+    path.lineToPoint_(Foundation.NSMakePoint(max_x - radius, max_y))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(max_x - radius, max_y - radius), radius, 90.0, 0.0, True
+    )
+    path.lineToPoint_(Foundation.NSMakePoint(max_x, mid_y + notch_half))
+    path.lineToPoint_(Foundation.NSMakePoint(max_x - notch_depth, mid_y))
+    path.lineToPoint_(Foundation.NSMakePoint(max_x, mid_y - notch_half))
+    path.lineToPoint_(Foundation.NSMakePoint(max_x, min_y + radius))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(max_x - radius, min_y + radius), radius, 0.0, -90.0, True
+    )
+    path.lineToPoint_(Foundation.NSMakePoint(min_x + radius, min_y))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(min_x + radius, min_y + radius), radius, -90.0, -180.0, True
+    )
+    path.lineToPoint_(Foundation.NSMakePoint(min_x, max_y - radius))
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        Foundation.NSMakePoint(min_x + radius, max_y - radius), radius, 180.0, 90.0, True
+    )
+    path.closePath()
+    return path
 
 
 class _CharacterView(AppKit.NSView):

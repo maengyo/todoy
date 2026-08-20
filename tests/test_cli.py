@@ -97,7 +97,7 @@ class FakeOverlayBackend:
 
 def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
     animations = types.ModuleType("todoy.display.overlay.animations")
-    movements = ("walk", "hop", "float", "dash", "still")
+    movements = ("walk", "hop", "float", "dash", "gallop", "still")
     bubble_effects = ("pop", "fade", "slide", "shake", "none")
     message_styles = ("bubble", "flag")
 
@@ -817,6 +817,67 @@ def test_overlay_flags_override_animation_values_from_config(
     assert state.options.message_style == "bubble"
 
 
+def test_overlay_accepts_gallop_movement_flag(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+
+    exit_code = main(["overlay", "--movement", "gallop"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.options is not None
+    assert state.options.movement == "gallop"
+    assert not data_file.exists()
+
+
+def test_overlay_character_flag_overrides_config_and_wires_real_character(
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    save_config(Config(character="robot"), config_file)
+
+    exit_code = main(["overlay", "--character", "horse"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.options is not None
+    assert state.options.character.name == "horse"
+    assert not data_file.exists()
+
+
+def test_overlay_unknown_character_prints_stderr_and_exits_1(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+
+    exit_code = main(["overlay", "--character", "nope"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "Unknown character: nope." in captured.err
+    assert "\x1b" not in captured.err
+    assert "\x07" not in captured.err
+    assert state.backend_calls == 0
+    assert not data_file.exists()
+
+
 def test_overlay_rejects_invalid_cli_animation_choice(
     data_file: Path,
     capsys: pytest.CaptureFixture[str],
@@ -850,7 +911,7 @@ def test_overlay_rejects_invalid_cli_message_style_choice(
     [
         (
             '[display]\nmovement = "crawl\\u001b]0;x\\u0007"\n',
-            "Unknown movement: crawl]0;x. Available: walk, hop, float, dash, still\n",
+            "Unknown movement: crawl]0;x. Available: walk, hop, float, dash, gallop, still\n",
         ),
         (
             '[display]\nbubble_effect = "burst\\u001b]0;x\\u0007"\n',
