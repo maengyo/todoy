@@ -156,12 +156,23 @@ edit your config yourself. Deliberate friction is the feature.
 - Other platforms: the display layer is pluggable; overlay backends for
   Linux/Windows are welcome contributions.
 
-While the overlay runs, a **menu-bar item** (the character's emoji) opens a
-quick panel: type a todo (+ optional `HH:MM` for an alarm), hit return — done.
-The same panel lists today's todos with check (✓), delete (✕), and pin (📌)
-controls for todoy's own todos; note-sourced todos are shown read-only (todoy
-never edits your notes). The reminder bubble itself still only offers Snooze
-and Quit — managing your list is your job, on purpose.
+### Adding a todo in one click (menu-bar quick panel)
+
+While the overlay runs, click the **character emoji in your menu bar**:
+
+![quick-add panel: type, add, check off](demo/quick-add.gif)
+
+1. Type the todo in the text field — hit **Return** (or the Add button) and
+   it's saved instantly.
+2. Want an alarm? Put `HH:MM` (e.g. `09:30`) in the small time field before
+   adding — the overlay will fire exactly that message at that time.
+3. The list below shows today's todos: **✓** completes, **✕** deletes,
+   **📌** pins (pinned todos survive `daily_clear`). Note-sourced todos are
+   read-only — todoy never edits your notes.
+4. Right-click the same menu-bar icon for **Quit todoy**.
+
+The reminder bubble itself still only offers Snooze and Quit — managing your
+list is your job, on purpose.
 
 ## Roadmap
 
