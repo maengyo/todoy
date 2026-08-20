@@ -54,6 +54,20 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M10 (follow-up) — 2026-08-20
+
+### Decisions
+
+- **Compact fluttering flag.** User feedback: the flag panel was too bulky. `message_style="flag"` is now a single-line pennant (~34px, no buttons) carrying ONE essential line — `build_flag_line` ("N to go: first (+k)" / "할 일 N개: …", 38 display columns max) or `build_alarm_flag_line` ("⏰ HH:MM …") — that flutters (6Hz notch wave) while riding the character, auto-hides after 10s, and snoozes on click (alarm-aware). `bubble` remains the full detailed style (30s, Snooze/Quit buttons).
+- Quit stays reachable in every style: the menu-bar status item gained a right-click "Quit todoy" menu.
+- Catalog grew to 15 characters (+turtle, snail, penguin, frog, bee, owl, unicorn, dino, alien, crab); English taunt lines reworded count-agnostic ("1 things" bug).
+- README demo media are self-rendered from the live app (see docs/demo.md).
+
+### Modifications from cross-review
+
+- FLAG_MAX_WIDTH raised 280→500px — the widest legal 38-column line measured ~464px and would have been clipped; regression test scans every widest legal builder output against the cap.
+- Quit-menu test coverage extended to bubble style.
+
 ## M9 (follow-up) — 2026-08-20
 
 ### Decisions

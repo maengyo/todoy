@@ -12,6 +12,8 @@ runs on the main run loop by construction (no background threads are used).
 
 from __future__ import annotations
 
+import math
+import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -21,7 +23,12 @@ import objc
 
 from todoy.display import sanitize_text
 from todoy.display.overlay.animations import CharacterMovement
-from todoy.display.overlay.core import AlarmClock, build_alarm_text
+from todoy.display.overlay.core import (
+    AlarmClock,
+    build_alarm_flag_line,
+    build_alarm_text,
+    build_flag_line,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -66,29 +73,58 @@ PANEL_BORDER_ALPHA = 0.55
 BUBBLE_TAIL_HEIGHT = 12.0
 BUBBLE_TAIL_WIDTH = 22.0
 
-# `flag` message style: same panel content as the bubble, but drawn as a
-# pennant (a swallow-tail notch cut into the panel's right edge) flying from
-# a pole drawn inside the view's left edge that visually connects down
-# toward the character. The window is taller than the panel by the pole's
-# height; the panel occupies the top `BUBBLE_HEIGHT` px, the pole the bottom
-# strip.
-FLAG_POLE_HEIGHT = 30.0
-FLAG_POLE_WIDTH = 4.0
-FLAG_POLE_INSET = 8.0
-FLAG_GAP_ABOVE_CHARACTER = 2.0
-FLAG_NOTCH_DEPTH = 10.0
-FLAG_NOTCH_HEIGHT = 16.0
-
 # Buttons: Snooze is the prominent accent action, Quit is a quiet text button.
+# (`bubble` message style only -- `flag` below has no buttons at all.)
 BUTTON_HEIGHT = 30.0
 BUTTON_CORNER_RADIUS = 8.0
 SNOOZE_BUTTON_WIDTH = 140.0
 QUIT_BUTTON_WIDTH = 76.0
 
-# The notch sits level with the button row, inside the empty padding strip
-# to the right of the Quit button (which stops `BUBBLE_PADDING` short of the
-# panel's right edge) -- so it never overlaps the text or the buttons.
-FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM = BUBBLE_PADDING + BUTTON_HEIGHT / 2.0
+# `flag` message style: NOT the bubble's panel content -- a small, single-
+# line pennant (no buttons, no wrapping) with a real swallow-tail notch cut
+# into its right edge, flying from a thin pole drawn inside the view's left
+# edge that visually connects down toward the character it rides next to.
+# The window is taller than the panel by the pole's height; the panel
+# occupies the top `FLAG_PANEL_HEIGHT` px, the pole the bottom strip. Width
+# is computed per-fire from the rendered text (see `_build_flag_window`),
+# clamped to [FLAG_MIN_WIDTH, FLAG_MAX_WIDTH].
+FLAG_PANEL_HEIGHT = 34.0
+FLAG_CORNER_RADIUS = 8.0
+FLAG_TEXT_FONT_SIZE = 13.0
+FLAG_TEXT_PADDING_LEFT = 12.0
+FLAG_TEXT_PADDING_RIGHT = 10.0
+FLAG_MIN_WIDTH = 96.0
+# The widest text `core.build_flag_line`/`build_alarm_flag_line` can ever
+# legally produce is bounded at `core.FLAG_LINE_MAX_WIDTH` (38) *display*
+# columns, but that bound says nothing about *pixels* -- a run of narrow
+# glyphs that each still render wide in the system font (e.g. "%" at 13pt
+# semibold) can measure well over 400px. An exhaustive scan of every
+# printable-ASCII single-character repeat through both builders/both
+# languages measured a worst case of ~435px of text alone (`⏰ 23:59` plus
+# 28 "%"s, truncated) -- plus `FLAG_TEXT_PADDING_LEFT` + `_RIGHT` + the
+# notch's `FLAG_NOTCH_DEPTH` puts the true worst-case content width at
+# ~464px. `FLAG_MAX_WIDTH` must stay comfortably above that (regression-
+# tested in `test_overlay_base.py`'s widest-legal-line scan) or the widest
+# legal lines get their text clamped narrower than they need and visually
+# overflow past the pennant's right edge.
+FLAG_MAX_WIDTH = 500.0
+FLAG_POLE_HEIGHT = 20.0
+FLAG_POLE_WIDTH = 3.0
+FLAG_POLE_INSET = 7.0
+FLAG_GAP_ABOVE_CHARACTER = 2.0
+FLAG_NOTCH_DEPTH = 7.0
+FLAG_NOTCH_HEIGHT = 12.0
+# The notch sits at the panel's vertical midpoint -- there's no button row
+# to dodge on this compact style, unlike the bubble's tail-in-the-corner.
+FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM = FLAG_PANEL_HEIGHT / 2.0
+FLAG_AUTO_HIDE_SECONDS = 10.0  # shorter than the bubble's 30s -- a glance, not a read
+
+# Flutter: a small periodic "wind" wave in the pennant's swallow-tail notch
+# depth while the flag is on screen -- kept to a small amplitude so it reads
+# as gentle wind, not a glitch.
+FLAG_FLUTTER_FREQUENCY_HZ = 6.0
+FLAG_FLUTTER_AMPLITUDE_PX = 2.5
+FLAG_FLUTTER_STEP_SECONDS = 1.0 / 30.0
 
 # --- menu-bar quick-add panel -------------------------------------------------
 #
@@ -166,8 +202,16 @@ class _OverlayController(AppKit.NSObject):
         self.char_view: _CharacterView | None = None
         self.bubble_window: AppKit.NSWindow | None = None
         self.bubble_text_field: AppKit.NSTextField | None = None
+        # Set only while a `flag`-style message window is on screen (rebuilt
+        # fresh -- see `_build_flag_window` -- each time one fires, since its
+        # width depends on that fire's text); `None` for `bubble`.
+        self.flag_view: _FlagPanelView | None = None
         self.hide_timer: AppKit.NSTimer | None = None
         self.shake_timer: AppKit.NSTimer | None = None
+        # `flag`-only: drives the pennant's periodic "wind" flutter while it
+        # is visible -- see `_start_flutter`/`_apply_flutter_frame`.
+        self.flutter_timer: AppKit.NSTimer | None = None
+        self._flutter_start: float = 0.0
         # `_message_base_origin` is where the message window rests with no
         # shake applied: for `flag`, refreshed every wander tick so it rides
         # along with the character; for `bubble`, set once at show time and
@@ -187,6 +231,10 @@ class _OverlayController(AppKit.NSObject):
 
         # --- menu-bar quick-add panel state ---------------------------------
         self.status_item: AppKit.NSStatusItem | None = None
+        # Right-click (or control-click) menu on the status item -- just
+        # "Quit todoy", reachable in both message styles; left-click keeps
+        # toggling the quick-add panel below (see `onStatusItemClicked_`).
+        self.status_menu: AppKit.NSMenu | None = None
         self.panel_window: _PanelWindow | None = None
         self.panel_text_field: AppKit.NSTextField | None = None
         self.panel_time_field: AppKit.NSTextField | None = None
@@ -383,6 +431,7 @@ class _OverlayController(AppKit.NSObject):
             self.test_timeout_timer,
             self.hide_timer,
             self.shake_timer,
+            self.flutter_timer,
         ):
             if timer is not None:
                 timer.invalidate()
@@ -392,6 +441,7 @@ class _OverlayController(AppKit.NSObject):
         self.test_timeout_timer = None
         self.hide_timer = None
         self.shake_timer = None
+        self.flutter_timer = None
         if self.status_item is not None:
             AppKit.NSStatusBar.systemStatusBar().removeStatusItem_(self.status_item)
             self.status_item = None
@@ -401,30 +451,43 @@ class _OverlayController(AppKit.NSObject):
     @objc.python_method
     def _show_reminder(self) -> None:
         self._showing_alarm = False
-        self._show_message(self.get_reminder_text())
+        if self.options.message_style == "flag":
+            text = build_flag_line(self.get_todos(), self.options.language)
+        else:
+            text = self.get_reminder_text()
+        self._show_message(text)
 
     @objc.python_method
     def _show_alarm(self, due_todos: list[Todo]) -> None:
         self._showing_alarm = True
-        self._show_message(build_alarm_text(due_todos, self.options.language))
+        if self.options.message_style == "flag":
+            text = build_alarm_flag_line(due_todos, self.options.language)
+        else:
+            text = build_alarm_text(due_todos, self.options.language)
+        self._show_message(text)
 
     @objc.python_method
     def _show_message(self, text: str) -> None:
-        if self.bubble_window is None:
-            self._build_bubble_window()
-        assert self.bubble_window is not None
-        assert self.bubble_text_field is not None
         self._cancel_bubble_shake()
-        self.bubble_text_field.setAttributedStringValue_(_build_reminder_attributed_text(text))
+        self._cancel_flutter()
+        if self.options.message_style == "flag":
+            self._build_flag_window(text)
+        else:
+            if self.bubble_window is None:
+                self._build_bubble_window()
+            assert self.bubble_window is not None
+            assert self.bubble_text_field is not None
+            self.bubble_text_field.setAttributedStringValue_(_build_reminder_attributed_text(text))
         self._refresh_message_base_origin()
         self._apply_message_window_frame()
         self._apply_bubble_entrance_effect()
         self._reset_hide_timer()
+        if self.options.message_style == "flag":
+            self._start_flutter()
 
     @objc.python_method
     def _build_bubble_window(self) -> None:
-        is_flag = self.options.message_style == "flag"
-        panel_bottom = FLAG_POLE_HEIGHT if is_flag else BUBBLE_TAIL_HEIGHT
+        panel_bottom = BUBBLE_TAIL_HEIGHT
         window_height = BUBBLE_HEIGHT + panel_bottom
 
         frame = Foundation.NSMakeRect(0, 0, BUBBLE_WIDTH, window_height)
@@ -444,14 +507,10 @@ class _OverlayController(AppKit.NSObject):
         )
 
         content = _MessagePanelView.alloc().initWithFrame_(frame)
-        content.style = "flag" if is_flag else "bubble"
         content.panel_bottom = panel_bottom
-        content.pole_inset = FLAG_POLE_INSET
-        content.pole_width = FLAG_POLE_WIDTH
 
-        # Both styles share the same panel content (text + Snooze/Quit),
-        # just shifted up by `panel_bottom` (the flag's pole strip, or the
-        # bubble's tail) at the bottom of the view.
+        # The panel content (text + Snooze/Quit), shifted up by
+        # `panel_bottom` (the bubble's tail) at the bottom of the view.
         text_field = AppKit.NSTextField.alloc().initWithFrame_(
             Foundation.NSMakeRect(
                 BUBBLE_PADDING,
@@ -666,9 +725,14 @@ class _OverlayController(AppKit.NSObject):
     def _reset_hide_timer(self) -> None:
         if self.hide_timer is not None:
             self.hide_timer.invalidate()
+        duration = (
+            FLAG_AUTO_HIDE_SECONDS
+            if self.options.message_style == "flag"
+            else BUBBLE_AUTO_HIDE_SECONDS
+        )
         self.hide_timer = (
             AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                BUBBLE_AUTO_HIDE_SECONDS, self, "onHideBubble:", None, False
+                duration, self, "onHideBubble:", None, False
             )
         )
 
@@ -678,11 +742,96 @@ class _OverlayController(AppKit.NSObject):
     @objc.python_method
     def _hide_bubble(self) -> None:
         self._cancel_bubble_shake()
+        self._cancel_flutter()
         if self.bubble_window is not None:
             self.bubble_window.orderOut_(None)
         if self.hide_timer is not None:
             self.hide_timer.invalidate()
             self.hide_timer = None
+
+    # --- flag pennant construction + flutter --------------------------------
+
+    @objc.python_method
+    def _build_flag_window(self, text: str) -> None:
+        """Rebuild `self.bubble_window` as a compact `flag` pennant sized to
+        `text`. Rebuilt fresh on every fire (rather than resized in place)
+        since each fire's text -- and therefore the pennant's width -- can
+        differ; flag fires are infrequent enough (once per reminder interval,
+        or on an alarm) that this is cheap.
+        """
+        attributed = _build_flag_attributed_text(text)
+        text_width = attributed.size().width
+        content_width = (
+            text_width + FLAG_TEXT_PADDING_LEFT + FLAG_TEXT_PADDING_RIGHT + FLAG_NOTCH_DEPTH
+        )
+        panel_width = min(max(content_width, FLAG_MIN_WIDTH), FLAG_MAX_WIDTH)
+        window_height = FLAG_PANEL_HEIGHT + FLAG_POLE_HEIGHT
+
+        if self.bubble_window is not None:
+            self.bubble_window.orderOut_(None)
+
+        frame = Foundation.NSMakeRect(0, 0, panel_width, window_height)
+        window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame,
+            AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
+            AppKit.NSBackingStoreBuffered,
+            False,
+        )
+        window.setOpaque_(False)
+        window.setBackgroundColor_(AppKit.NSColor.clearColor())
+        window.setHasShadow_(True)
+        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        window.setCollectionBehavior_(
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorStationary
+        )
+
+        content = _FlagPanelView.alloc().initWithFrame_(frame)
+        content.controller = self
+        content.panel_bottom = FLAG_POLE_HEIGHT
+        content.pole_inset = FLAG_POLE_INSET
+        content.pole_width = FLAG_POLE_WIDTH
+        content.set_text(attributed, FLAG_TEXT_PADDING_LEFT)
+        window.setContentView_(content)
+
+        self.bubble_window = window
+        self.bubble_text_field = None
+        self.flag_view = content
+
+    @objc.python_method
+    def _start_flutter(self) -> None:
+        """Begin the pennant's periodic "wind" flutter (notch-depth wobble,
+        see `_flutter_notch_offset`) on a dedicated repeating timer, stored
+        + invalidated like the other timers (`_cancel_flutter`,
+        `_invalidate_all_timers`). No-op outside `flag` style.
+        """
+        if self.options.message_style != "flag":
+            return
+        self._flutter_start = time.monotonic()
+        self._apply_flutter_frame()
+        self.flutter_timer = (
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                FLAG_FLUTTER_STEP_SECONDS, self, "onFlutterStep:", None, True
+            )
+        )
+
+    def onFlutterStep_(self, timer: AppKit.NSTimer) -> None:
+        self._apply_flutter_frame()
+
+    @objc.python_method
+    def _apply_flutter_frame(self) -> None:
+        view = self.flag_view
+        if view is None:
+            return
+        elapsed = time.monotonic() - self._flutter_start
+        view.flutter_offset = _flutter_notch_offset(elapsed)
+        view.setNeedsDisplay_(True)
+
+    @objc.python_method
+    def _cancel_flutter(self) -> None:
+        if self.flutter_timer is not None:
+            self.flutter_timer.invalidate()
+            self.flutter_timer = None
 
     # --- bubble button actions ----------------------------------------------
 
@@ -709,13 +858,30 @@ class _OverlayController(AppKit.NSObject):
         button.setTitle_(self.options.character.emoji)
         button.setTarget_(self)
         button.setAction_("onStatusItemClicked:")
+        # Left-click keeps toggling the quick-add panel (below); right-click
+        # (or control-click) instead shows the Quit menu -- both routed
+        # through the one action handler, disambiguated by the click event
+        # it's dispatched with (see `onStatusItemClicked_`).
+        button.sendActionOn_(AppKit.NSEventMaskLeftMouseUp | AppKit.NSEventMaskRightMouseUp)
         self.status_item = item
+        self.status_menu = _build_status_menu(self)
 
     def onStatusItemClicked_(self, sender: AppKit.NSObject) -> None:
+        event = self.app.currentEvent()
+        if event is not None and event.type() == AppKit.NSEventTypeRightMouseUp:
+            self._show_status_menu(event)
+            return
         if self.panel_window is not None and self.panel_window.isVisible():
             self._hide_panel()
         else:
             self._show_panel()
+
+    @objc.python_method
+    def _show_status_menu(self, event: AppKit.NSEvent) -> None:
+        if self.status_menu is None or self.status_item is None:
+            return
+        button = self.status_item.button()
+        AppKit.NSMenu.popUpContextMenu_withEvent_forView_(self.status_menu, event, button)
 
     @objc.python_method
     def _show_panel(self) -> None:
@@ -1025,6 +1191,21 @@ def _scaled_frame(frame: AppKit.NSRect, scale: float) -> AppKit.NSRect:
     return Foundation.NSMakeRect(new_x, new_y, new_width, new_height)
 
 
+def _build_status_menu(controller: _OverlayController) -> AppKit.NSMenu:
+    """The status item's right-click menu: a single "Quit todoy" item,
+    wired to the same `onQuitClicked_` the bubble's Quit button uses --
+    reachable in both message styles, alongside the (unchanged) left-click
+    quick-add panel toggle (see `onStatusItemClicked_`).
+    """
+    menu = AppKit.NSMenu.alloc().init()
+    quit_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Quit todoy", "onQuitClicked:", ""
+    )
+    quit_item.setTarget_(controller)
+    menu.addItem_(quit_item)
+    return menu
+
+
 @contextmanager
 def _animation_group(duration: float) -> Iterator[None]:
     """Run an `.animator()`-proxied change over `duration` seconds."""
@@ -1220,24 +1401,17 @@ def _build_reminder_attributed_text(text: str) -> AppKit.NSAttributedString:
 
 
 class _MessagePanelView(AppKit.NSView):
-    """Message-window content shared by both message styles.
+    """`bubble` message-window content: a rounded-rect panel (holding the
+    reminder text + Snooze/Quit buttons, added as subviews by the caller)
+    occupying the top `bounds.height - panel_bottom` of the view, with a real
+    speech-bubble tail (an `NSBezierPath` triangle merged into the panel
+    outline) pointing straight down at the character below.
 
-    Draws a rounded-rect panel (holding the reminder text + buttons, added
-    as subviews by the caller) occupying the top `bounds.height - panel_bottom`
-    of the view, plus:
-    - `style == "bubble"`: a real speech-bubble tail (an `NSBezierPath`
-      triangle merged into the panel outline) pointing straight down at the
-      character below.
-    - `style == "flag"`: a swallow-tail pennant notch cut into the panel's
-      right edge, plus a thin pole strip inside the view's left edge running
-      from the panel's bottom down to the view's bottom edge -- the visual
-      connection down toward the character the flag rides next to.
+    `flag`'s compact pennant is a different, unrelated content view -- see
+    `_FlagPanelView` below.
     """
 
-    style: str = "bubble"
     panel_bottom: float = 0.0
-    pole_inset: float = 0.0
-    pole_width: float = 0.0
 
     def drawRect_(self, rect: AppKit.NSRect) -> None:
         bounds = self.bounds()
@@ -1248,16 +1422,7 @@ class _MessagePanelView(AppKit.NSView):
             bounds.size.height - self.panel_bottom,
         )
 
-        if self.style == "flag":
-            path = _pennant_path(
-                panel_rect,
-                PANEL_CORNER_RADIUS,
-                FLAG_NOTCH_DEPTH,
-                FLAG_NOTCH_HEIGHT,
-                FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM,
-            )
-        else:
-            path = _bubble_tail_path(panel_rect, PANEL_CORNER_RADIUS, BUBBLE_TAIL_WIDTH)
+        path = _bubble_tail_path(panel_rect, PANEL_CORNER_RADIUS, BUBBLE_TAIL_WIDTH)
 
         AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(PANEL_FILL_ALPHA).setFill()
         path.fill()
@@ -1265,15 +1430,6 @@ class _MessagePanelView(AppKit.NSView):
         AppKit.NSColor.separatorColor().colorWithAlphaComponent_(PANEL_BORDER_ALPHA).setStroke()
         path.setLineWidth_(1.0)
         path.stroke()
-
-        if self.style == "flag" and self.panel_bottom > 0.0:
-            pole_rect = Foundation.NSMakeRect(
-                self.pole_inset, 0.0, self.pole_width, self.panel_bottom
-            )
-            AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(
-                PANEL_FILL_ALPHA
-            ).setFill()
-            AppKit.NSBezierPath.bezierPathWithRect_(pole_rect).fill()
 
     def isFlipped(self) -> bool:
         return False
@@ -1322,8 +1478,9 @@ def _pennant_path(
     notch_offset_from_bottom: float,
 ) -> AppKit.NSBezierPath:
     """A rounded-rect outline with a swallow-tail notch cut into the right
-    edge, level with the button row -- the pennant "flutter" flying from the
-    pole drawn separately at the view's left edge.
+    edge -- the pennant "flutter" flying from the pole drawn separately at
+    the view's left edge. `notch_depth` is re-passed every flutter frame
+    (see `_FlagPanelView.drawRect_`) so the cut visibly waves in place.
     """
     min_x, min_y = rect.origin.x, rect.origin.y
     max_x, max_y = min_x + rect.size.width, min_y + rect.size.height
@@ -1353,6 +1510,109 @@ def _pennant_path(
     )
     path.closePath()
     return path
+
+
+def _build_flag_attributed_text(text: str) -> AppKit.NSAttributedString:
+    """Single-line semibold text for the compact flag pennant -- a lighter
+    typographic treatment than the bubble's taunt/body hierarchy
+    (`_build_reminder_attributed_text`), since there's only ever one line.
+    """
+    font = AppKit.NSFont.systemFontOfSize_weight_(FLAG_TEXT_FONT_SIZE, AppKit.NSFontWeightSemibold)
+    attrs = {
+        AppKit.NSFontAttributeName: font,
+        AppKit.NSForegroundColorAttributeName: AppKit.NSColor.labelColor(),
+    }
+    return AppKit.NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+
+
+def _flutter_notch_offset(elapsed_seconds: float) -> float:
+    """The pennant's notch-depth wobble at `elapsed_seconds` into its
+    flutter -- a small sine wave so the swallow-tail visibly waves like
+    cloth in the wind, not a glitch. Pure and AppKit-free by design (though
+    this module still requires pyobjc to import), so it's trivial to sample
+    at arbitrary times for verification without a real timer/event loop.
+    """
+    phase = 2.0 * math.pi * FLAG_FLUTTER_FREQUENCY_HZ * elapsed_seconds
+    return FLAG_FLUTTER_AMPLITUDE_PX * math.sin(phase)
+
+
+class _FlagPanelView(AppKit.NSView):
+    """Compact `flag` message-window content: a single-line pennant with a
+    real swallow-tail notch cut into its right edge (see `_pennant_path`),
+    flying from a thin pole strip at the view's left edge that connects down
+    toward the character, plus the fire's text drawn directly onto the panel
+    (no subviews -- see `set_text`). No buttons on this style: the whole
+    panel is clickable, and a click snoozes exactly like the bubble's Snooze
+    button (`mouseDown_` below, wired to the same `onSnoozeClicked_`).
+
+    `flutter_offset`, refreshed every flutter frame by the controller (see
+    `_OverlayController._apply_flutter_frame`), nudges the notch depth to
+    animate the "wind" flutter; `0.0` (its default) draws the notch at its
+    resting depth.
+    """
+
+    controller: _OverlayController | None = None
+    panel_bottom: float = 0.0
+    pole_inset: float = 0.0
+    pole_width: float = 0.0
+    flutter_offset: float = 0.0
+    _text: AppKit.NSAttributedString | None = None
+    _text_x: float = 0.0
+
+    @objc.python_method
+    def set_text(self, attributed: AppKit.NSAttributedString, text_x: float) -> None:
+        self._text = attributed
+        self._text_x = text_x
+
+    def drawRect_(self, rect: AppKit.NSRect) -> None:
+        bounds = self.bounds()
+        panel_rect = Foundation.NSMakeRect(
+            0.0,
+            self.panel_bottom,
+            bounds.size.width,
+            bounds.size.height - self.panel_bottom,
+        )
+
+        notch_depth = max(1.0, FLAG_NOTCH_DEPTH + self.flutter_offset)
+        path = _pennant_path(
+            panel_rect,
+            FLAG_CORNER_RADIUS,
+            notch_depth,
+            FLAG_NOTCH_HEIGHT,
+            FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM,
+        )
+
+        AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(PANEL_FILL_ALPHA).setFill()
+        path.fill()
+
+        AppKit.NSColor.separatorColor().colorWithAlphaComponent_(PANEL_BORDER_ALPHA).setStroke()
+        path.setLineWidth_(1.0)
+        path.stroke()
+
+        if self.panel_bottom > 0.0:
+            pole_rect = Foundation.NSMakeRect(
+                self.pole_inset, 0.0, self.pole_width, self.panel_bottom
+            )
+            AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(
+                PANEL_FILL_ALPHA
+            ).setFill()
+            AppKit.NSBezierPath.bezierPathWithRect_(pole_rect).fill()
+
+        if self._text is not None:
+            text_height = self._text.size().height
+            available = bounds.size.height - self.panel_bottom - text_height
+            text_y = self.panel_bottom + available / 2.0
+            self._text.drawAtPoint_(Foundation.NSMakePoint(self._text_x, text_y))
+
+    def isFlipped(self) -> bool:
+        return False
+
+    def mouseDown_(self, event: AppKit.NSEvent) -> None:
+        # No buttons on the compact flag -- clicking anywhere on the
+        # pennant snoozes, alarm-aware exactly like the bubble's Snooze
+        # button.
+        if self.controller is not None:
+            self.controller.onSnoozeClicked_(self)
 
 
 class _CharacterView(AppKit.NSView):

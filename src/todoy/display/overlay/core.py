@@ -24,6 +24,18 @@ if TYPE_CHECKING:
 MAX_TODO_LINE_WIDTH = 45
 MAX_TODO_LINES = 5
 
+# The compact `flag` message style is a single line on a small pennant, so
+# its budget is much tighter than a bubble's per-line wrap width above.
+FLAG_LINE_MAX_WIDTH = 38
+
+# `build_flag_line`'s zero-todos line: a fixed constant (not drawn from the
+# taunt pool, unlike `build_reminder_text`) -- there's no room for variety
+# on a single-line pennant.
+_FLAG_CONGRATS: dict[Language, str] = {
+    "en": "All clear 🎉",
+    "ko": "오늘 끝! 🎉",
+}
+
 # Bounded catch-up: a timed alarm missed while the overlay wasn't running (or
 # was asleep) still fires once, but only if the app first sees it within this
 # window after its scheduled time; older misses are skipped silently.
@@ -284,6 +296,82 @@ def _format_todo_line(todo: Todo) -> str:
     else:
         line = f"* {text}"
     return _truncate(line, MAX_TODO_LINE_WIDTH)
+
+
+def build_flag_line(
+    todos: list[Todo],
+    language: Language,
+    rng: random.Random | None = None,
+) -> str:
+    """Assemble the single-line pennant text for the compact `flag` message
+    style -- the "one essential line" the character's fluttering flag rides
+    with, as opposed to `build_reminder_text`'s full multi-line bubble.
+
+    >=1 todos: "{count} to go: {first}" (en) / "할 일 {count}개: {first}"
+    (ko), with a " (+{k})" suffix when there is more than one todo
+    (k = count - 1). `first` is the first todo's sanitized display text,
+    including its alarm-time prefix if it has one (see `_todo_display_text`)
+    -- truncated with an ellipsis as needed so the WHOLE assembled line
+    (count prefix, first, and suffix together) fits `FLAG_LINE_MAX_WIDTH`
+    display columns.
+
+    0 todos: `_FLAG_CONGRATS[language]`, a short fixed congrats line -- NOT
+    drawn from `messages.taunt`'s pool, since a single-line pennant has no
+    room for variety. `rng` is accepted but currently unused, kept in the
+    signature for parity with `build_reminder_text` and to leave room for
+    future variation.
+    """
+    del rng  # reserved: currently unused, see docstring
+
+    if not todos:
+        return _FLAG_CONGRATS[language]
+
+    count = len(todos)
+    first = _todo_display_text(todos[0])
+    suffix = f" (+{count - 1})" if count > 1 else ""
+    prefix = f"할 일 {count}개: " if language == "ko" else f"{count} to go: "
+
+    return _assemble_truncated_line(prefix, first, suffix, FLAG_LINE_MAX_WIDTH)
+
+
+def build_alarm_flag_line(due: list[Todo], language: Language) -> str:
+    """Assemble the single-line pennant text for a fired alarm.
+
+    "⏰ HH:MM text" for the first due todo, with a " (+{k})" suffix when more
+    than one alarm fired simultaneously (k = len(due) - 1); same
+    whole-line-fits-`FLAG_LINE_MAX_WIDTH`-columns truncation rule as
+    `build_flag_line`. The compact-flag counterpart of `build_alarm_text`.
+    """
+    del language  # reserved: alarm text has no localized copy today (see build_alarm_text)
+
+    if not due:
+        return ""
+
+    todo = due[0]
+    prefix = f"{ALARM_EMOJI} {todo.at} "
+    suffix = f" (+{len(due) - 1})" if len(due) > 1 else ""
+
+    return _assemble_truncated_line(prefix, sanitize_text(todo.text), suffix, FLAG_LINE_MAX_WIDTH)
+
+
+def _todo_display_text(todo: Todo) -> str:
+    """Sanitized todo text, prefixed with its alarm time ("HH:MM text") when
+    it has one -- mirrors `tui.todo_display_text`'s formatting.
+    """
+    text = sanitize_text(todo.text)
+    if todo.at is None:
+        return text
+    return f"{todo.at} {text}"
+
+
+def _assemble_truncated_line(prefix: str, body: str, suffix: str, max_width: int) -> str:
+    """`prefix + body + suffix`, truncating `body` (with a trailing "…" if
+    needed) so the WHOLE line fits `max_width` display columns -- `prefix`
+    and `suffix` are never truncated, only the variable `body` in between.
+    """
+    overhead = _display_width(prefix) + _display_width(suffix)
+    budget = max_width - overhead
+    return f"{prefix}{_truncate(body, budget)}{suffix}"
 
 
 def _truncate(text: str, max_width: int) -> str:

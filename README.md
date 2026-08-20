@@ -146,7 +146,8 @@ edit your config yourself. Deliberate friction is the feature.
   `todoy overlay --movement gallop --message-style flag --character horse`
   makes a horse gallop across your screen carrying your todos on a flag.
   Movements: `walk` (default) / `hop` / `float` / `dash` / `gallop` / `still`.
-  Message styles: `bubble` (default, stays put) / `flag` (rides along with the
+  Message styles: `bubble` (default: full details, stays put) / `flag` (one
+  essential line on a small fluttering pennant that rides along with the
   character). Entrance effects: `--bubble-effect pop` (default) / `fade` /
   `slide` / `shake` / `none`. Set them permanently via `movement` /
   `message_style` / `bubble_effect` under `[display]` in the config.

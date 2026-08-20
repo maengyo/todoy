@@ -9,7 +9,9 @@ import pytest
 from todoy.display.overlay.core import (
     AlarmClock,
     ReminderScheduler,
+    build_alarm_flag_line,
     build_alarm_text,
+    build_flag_line,
     build_reminder_text,
 )
 from todoy.models import Todo
@@ -633,3 +635,175 @@ def test_build_alarm_text_truncates_long_multi_todo_line() -> None:
     for line in text.split("\n"):
         assert _display_width(line) <= 45
         assert line.endswith("…")
+
+
+# --- build_flag_line (compact fluttering flag) --------------------------------
+
+
+def test_build_flag_line_zero_todos_en_is_constant_congrats() -> None:
+    assert build_flag_line([], "en", rng=random.Random(1)) == "All clear 🎉"
+
+
+def test_build_flag_line_zero_todos_ko_is_constant_congrats() -> None:
+    assert build_flag_line([], "ko", rng=random.Random(1)) == "오늘 끝! 🎉"
+
+
+def test_build_flag_line_zero_todos_is_not_drawn_from_taunt_pool() -> None:
+    # Unlike build_reminder_text's congrats line, the flag's zero-todo line
+    # is a fixed constant -- must not vary with rng.
+    first = build_flag_line([], "en", rng=random.Random(1))
+    second = build_flag_line([], "en", rng=random.Random(999))
+
+    assert first == second == "All clear 🎉"
+
+
+def test_build_flag_line_rng_is_optional() -> None:
+    assert build_flag_line([], "en") == "All clear 🎉"
+
+
+def test_build_flag_line_single_todo_en_has_no_count_suffix() -> None:
+    todos = [Todo(text="write report", id=1, source="builtin")]
+
+    text = build_flag_line(todos, "en")
+
+    assert text == "1 to go: write report"
+
+
+def test_build_flag_line_single_todo_ko_has_no_count_suffix() -> None:
+    todos = [Todo(text="보고서 작성", id=1, source="builtin")]
+
+    text = build_flag_line(todos, "ko")
+
+    assert text == "할 일 1개: 보고서 작성"
+
+
+def test_build_flag_line_includes_at_prefix_on_first_todo() -> None:
+    todos = [_todo("회의", at="14:00")]
+
+    text = build_flag_line(todos, "en")
+
+    assert text == "1 to go: 14:00 회의"
+
+
+def test_build_flag_line_multiple_todos_appends_count_suffix() -> None:
+    todos = [
+        Todo(text="a", id=1, source="builtin"),
+        Todo(text="b", id=2, source="builtin"),
+        Todo(text="c", id=3, source="builtin"),
+    ]
+
+    text = build_flag_line(todos, "en")
+
+    assert text == "3 to go: a (+2)"
+
+
+def test_build_flag_line_multiple_todos_appends_count_suffix_ko() -> None:
+    todos = [
+        Todo(text="a", id=1, source="builtin"),
+        Todo(text="b", id=2, source="builtin"),
+    ]
+
+    text = build_flag_line(todos, "ko")
+
+    assert text == "할 일 2개: a (+1)"
+
+
+def test_build_flag_line_sanitizes_control_characters() -> None:
+    todos = [Todo(text="danger\x07bell", id=1, source="builtin")]
+
+    text = build_flag_line(todos, "en")
+
+    assert "\x07" not in text
+    assert "dangerbell" in text
+
+
+def test_build_flag_line_truncates_whole_line_to_38_columns() -> None:
+    todos = [Todo(text="x" * 200, id=1, source="builtin")]
+
+    text = build_flag_line(todos, "en")
+
+    assert _display_width(text) <= 38
+    assert text.endswith("…")
+
+
+def test_build_flag_line_truncates_korean_wide_text_by_display_width() -> None:
+    todos = [Todo(text="가" * 30, id=1, source="builtin")]
+
+    text = build_flag_line(todos, "en")
+
+    assert _display_width(text) <= 38
+    assert text.endswith("…")
+    assert len(text) < 38
+
+
+def test_build_flag_line_truncation_preserves_count_suffix() -> None:
+    # The count suffix must survive truncation -- only the first todo's text
+    # is shortened, never the "(+N)" tail that communicates there's more.
+    todos = [
+        Todo(text="x" * 200, id=1, source="builtin"),
+        Todo(text="y", id=2, source="builtin"),
+        Todo(text="z", id=3, source="builtin"),
+    ]
+
+    text = build_flag_line(todos, "en")
+
+    assert _display_width(text) <= 38
+    assert text.endswith(" (+2)")
+
+
+# --- build_alarm_flag_line -----------------------------------------------------
+
+
+def test_build_alarm_flag_line_empty_list_is_empty_string() -> None:
+    assert build_alarm_flag_line([], "en") == ""
+
+
+def test_build_alarm_flag_line_single_due_todo_no_suffix() -> None:
+    todo = _todo("회의", at="14:00")
+
+    text = build_alarm_flag_line([todo], "en")
+
+    assert text == "⏰ 14:00 회의"
+
+
+def test_build_alarm_flag_line_multiple_due_appends_count_suffix() -> None:
+    first = _todo("회의", at="14:00")
+    second = _todo("water plants", at="14:00")
+
+    text = build_alarm_flag_line([first, second], "en")
+
+    assert text == "⏰ 14:00 회의 (+1)"
+
+
+def test_build_alarm_flag_line_language_independent() -> None:
+    todo = _todo("회의", at="14:00")
+
+    assert build_alarm_flag_line([todo], "en") == build_alarm_flag_line([todo], "ko")
+
+
+def test_build_alarm_flag_line_sanitizes_control_characters() -> None:
+    todo = _todo("danger\x07bell", at="09:00")
+
+    text = build_alarm_flag_line([todo], "en")
+
+    assert "\x07" not in text
+    assert "dangerbell" in text
+
+
+def test_build_alarm_flag_line_truncates_whole_line_to_38_columns() -> None:
+    todo = _todo("x" * 200, at="09:00")
+
+    text = build_alarm_flag_line([todo], "en")
+
+    assert _display_width(text) <= 38
+    assert text.endswith("…")
+
+
+def test_build_alarm_flag_line_truncation_preserves_count_suffix() -> None:
+    first = _todo("x" * 200, at="09:00")
+    second = _todo("y", at="09:00")
+
+    text = build_alarm_flag_line([first, second], "en")
+
+    assert _display_width(text) <= 38
+    assert text.endswith(" (+1)")
