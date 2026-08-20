@@ -115,6 +115,11 @@ edit your config yourself. Deliberate friction is the feature.
 
 - Replace the character with your own image: set `character_image` in
   `~/.config/todoy/config.toml` (or answer the `todoy init` prompt).
+- Pick how it moves and how the bubble appears:
+  `todoy overlay --movement hop --bubble-effect shake` — movements are
+  `walk` (default) / `hop` / `float` / `dash` / `still`, bubble effects are
+  `pop` (default) / `fade` / `slide` / `shake` / `none`; set them permanently
+  via `movement` / `bubble_effect` under `[display]` in the config.
 - `todoy overlay --once` prints the reminder text to stdout without any GUI
   (works on every OS — handy for scripts and previews).
 - Other platforms: the display layer is pluggable; overlay backends for

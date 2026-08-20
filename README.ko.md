@@ -111,6 +111,11 @@ $ todoy overlay
 
 - 캐릭터를 내 이미지로 교체: `~/.config/todoy/config.toml`의 `character_image`
   설정(또는 `todoy init` 질문에 답하기).
+- 움직임과 말풍선 등장 방식 고르기:
+  `todoy overlay --movement hop --bubble-effect shake` — 이동은
+  `walk`(기본) / `hop` / `float` / `dash` / `still`, 말풍선 효과는
+  `pop`(기본) / `fade` / `slide` / `shake` / `none`. config `[display]`의
+  `movement` / `bubble_effect`로 영구 설정.
 - `todoy overlay --once`는 GUI 없이 리마인드 텍스트만 출력합니다
   (모든 OS에서 동작 — 스크립트·미리보기용).
 - 다른 플랫폼: display 레이어는 플러그인 구조입니다. Linux/Windows 오버레이

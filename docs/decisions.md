@@ -54,6 +54,15 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M6 (follow-up) — 2026-08-20
+
+### Decisions
+
+- **Selectable animations (issue #11).** Character movement presets (`walk` default, `hop`, `float`, `dash`, `still`) live in `display/overlay/animations.py` as a pure, dt-driven, rng-injectable state machine (`CharacterMovement.step(dt) -> (x, y_offset)`); the macOS backend just applies positions. Bubble entrance effects (`pop` default, `fade`, `slide`, `shake`, `none`) are applied via `NSAnimationContext` in the backend.
+- Selection surface: `[display] movement / bubble_effect` in config plus `todoy overlay --movement/--bubble-effect` (flag > config > default). `todoy init` intentionally not extended — the wizard stays short.
+- Name validation lives in `animations.validate_*` (overlay path), config load only type-checks — same split as character names. Unknown names report the available list via sanitized stderr + exit 1.
+- Character position note: the character patrols the bottom edge — `CHARACTER_BOTTOM_MARGIN = 24px` above the screen bottom plus the movement's vertical offset (≤40px). A configurable edge/position is a possible follow-up, not yet requested as config.
+
 ## M4 — 2026-08-20
 
 ### Decisions

@@ -26,6 +26,8 @@ from todoy.models import Todo
 from todoy.sources.builtin import BuiltinSource
 
 CommandHandler = Callable[[argparse.Namespace, BuiltinSource], int]
+MOVEMENT_CHOICES = ("walk", "hop", "float", "dash", "still")
+BUBBLE_EFFECT_CHOICES = ("pop", "fade", "slide", "shake", "none")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -58,6 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
     overlay_parser.add_argument("--interval", type=int, metavar="MINUTES")
     overlay_parser.add_argument("--lang", choices=("en", "ko"))
     overlay_parser.add_argument("--once", action="store_true")
+    overlay_parser.add_argument("--movement", choices=MOVEMENT_CHOICES)
+    overlay_parser.add_argument("--bubble-effect", choices=BUBBLE_EFFECT_CHOICES)
     overlay_parser.set_defaults(handler=_overlay)
 
     return parser
@@ -227,6 +231,13 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
     interval_minutes = (
         args.interval if args.interval is not None else config.reminder_interval_minutes
     )
+    animations_module = importlib.import_module("todoy.display.overlay.animations")
+    movement = animations_module.validate_movement(
+        args.movement if args.movement is not None else config.movement
+    )
+    bubble_effect = animations_module.validate_bubble_effect(
+        args.bubble_effect if args.bubble_effect is not None else config.bubble_effect
+    )
 
     core_module = importlib.import_module("todoy.display.overlay.core")
     build_reminder_text = core_module.build_reminder_text
@@ -244,6 +255,8 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
         character_image=config.character_image,
         language=language,
         test_seconds=_overlay_test_seconds(),
+        movement=movement,
+        bubble_effect=bubble_effect,
     )
 
     try:

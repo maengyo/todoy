@@ -12,14 +12,17 @@ runs on the main run loop by construction (no background threads are used).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import AppKit
 import Foundation
 import objc
 
+from todoy.display.overlay.animations import CharacterMovement
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from todoy.display.overlay.base import OverlayOptions
@@ -29,9 +32,13 @@ if TYPE_CHECKING:
 
 FIRST_FIRE_DELAY_SECONDS = 5.0
 WANDER_TICK_SECONDS = 0.15
-WANDER_SPEED_PX_PER_TICK = 2.5
 REMINDER_CHECK_INTERVAL_SECONDS = 1.0
 BUBBLE_AUTO_HIDE_SECONDS = 30.0
+BUBBLE_EFFECT_DURATION_SECONDS = 0.22  # pop/fade/slide entrance animations
+BUBBLE_SHAKE_OSCILLATIONS = 3
+BUBBLE_SHAKE_AMPLITUDE_PX = 8.0
+BUBBLE_SHAKE_STEP_SECONDS = 0.04
+BUBBLE_SLIDE_RISE_PX = 20.0
 
 CHARACTER_MAX_IMAGE_PX = 96.0
 CHARACTER_WINDOW_SIZE = 110.0
@@ -85,12 +92,15 @@ class _OverlayController(AppKit.NSObject):
         self.scheduler = scheduler
         self.get_reminder_text = get_reminder_text
         self.app = app
-        self.direction = 1.0
+        self.movement: CharacterMovement | None = None
         self.char_window: AppKit.NSWindow | None = None
         self.char_view: _CharacterView | None = None
         self.bubble_window: AppKit.NSWindow | None = None
         self.bubble_text_field: AppKit.NSTextField | None = None
         self.hide_timer: AppKit.NSTimer | None = None
+        self.shake_timer: AppKit.NSTimer | None = None
+        self._shake_base_origin: AppKit.NSPoint | None = None
+        self._shake_step_index = 0
         self.wander_timer: AppKit.NSTimer | None = None
         self.reminder_timer: AppKit.NSTimer | None = None
         self.first_fire_timer: AppKit.NSTimer | None = None
@@ -133,8 +143,12 @@ class _OverlayController(AppKit.NSObject):
     def _build_character_window(self) -> None:
         screen_frame = self._screen_frame()
         size = CHARACTER_WINDOW_SIZE
-        start_x = screen_frame.origin.x + screen_frame.size.width * 0.3
-        start_y = screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN
+        travel_width = max(0.0, screen_frame.size.width - size)
+        self.movement = CharacterMovement(self.options.movement, travel_width=travel_width)
+
+        x, y_offset = self.movement.step(0.0)
+        start_x = screen_frame.origin.x + x
+        start_y = screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN + y_offset
         frame = Foundation.NSMakeRect(start_x, start_y, size, size)
 
         window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -190,23 +204,15 @@ class _OverlayController(AppKit.NSObject):
 
     def onWanderTick_(self, timer: AppKit.NSTimer) -> None:
         window = self.char_window
-        if window is None:
+        if window is None or self.movement is None:
             return
 
         screen_frame = self._screen_frame()
-        frame = window.frame()
-        new_x = frame.origin.x + self.direction * WANDER_SPEED_PX_PER_TICK
+        x, y_offset = self.movement.step(WANDER_TICK_SECONDS)
+        new_x = screen_frame.origin.x + x
+        new_y = screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN + y_offset
 
-        min_x = screen_frame.origin.x
-        max_x = screen_frame.origin.x + screen_frame.size.width - frame.size.width
-        if new_x <= min_x:
-            new_x = min_x
-            self.direction = 1.0
-        elif new_x >= max_x:
-            new_x = max_x
-            self.direction = -1.0
-
-        window.setFrameOrigin_(Foundation.NSMakePoint(new_x, frame.origin.y))
+        window.setFrameOrigin_(Foundation.NSMakePoint(new_x, new_y))
         if self.bubble_window is not None and self.bubble_window.isVisible():
             self._position_bubble()
 
@@ -241,6 +247,7 @@ class _OverlayController(AppKit.NSObject):
             self.first_fire_timer,
             self.test_timeout_timer,
             self.hide_timer,
+            self.shake_timer,
         ):
             if timer is not None:
                 timer.invalidate()
@@ -249,6 +256,7 @@ class _OverlayController(AppKit.NSObject):
         self.first_fire_timer = None
         self.test_timeout_timer = None
         self.hide_timer = None
+        self.shake_timer = None
 
     # --- reminder bubble ---------------------------------------------------
 
@@ -259,9 +267,10 @@ class _OverlayController(AppKit.NSObject):
             self._build_bubble_window()
         assert self.bubble_window is not None
         assert self.bubble_text_field is not None
+        self._cancel_bubble_shake()
         self.bubble_text_field.setStringValue_(text)
         self._position_bubble()
-        self.bubble_window.orderFrontRegardless()
+        self._apply_bubble_entrance_effect()
         self._reset_hide_timer()
 
     @objc.python_method
@@ -336,6 +345,104 @@ class _OverlayController(AppKit.NSObject):
         self.bubble_window.setFrameOrigin_(Foundation.NSMakePoint(x, y))
 
     @objc.python_method
+    def _apply_bubble_entrance_effect(self) -> None:
+        """Show `self.bubble_window` using `self.options.bubble_effect`.
+
+        `_position_bubble()` must already have set the window's *target*
+        frame before this runs. pop/fade/slide animate via
+        `NSAnimationContext` (<= `BUBBLE_EFFECT_DURATION_SECONDS`); shake
+        appears instantly and then wiggles horizontally with chained
+        one-shot `NSTimer`s; none appears instantly with no animation.
+        """
+        window = self.bubble_window
+        assert window is not None
+        effect = self.options.bubble_effect
+        target_frame = window.frame()
+
+        if effect == "pop":
+            window.setAlphaValue_(1.0)
+            window.setFrame_display_(_scaled_frame(target_frame, 0.85), False)
+            window.orderFrontRegardless()
+            with _animation_group(BUBBLE_EFFECT_DURATION_SECONDS):
+                window.animator().setFrame_display_(target_frame, True)
+            return
+
+        if effect == "fade":
+            window.setAlphaValue_(0.0)
+            window.setFrame_display_(target_frame, False)
+            window.orderFrontRegardless()
+            with _animation_group(BUBBLE_EFFECT_DURATION_SECONDS):
+                window.animator().setAlphaValue_(1.0)
+            return
+
+        if effect == "slide":
+            start_frame = Foundation.NSMakeRect(
+                target_frame.origin.x,
+                target_frame.origin.y - BUBBLE_SLIDE_RISE_PX,
+                target_frame.size.width,
+                target_frame.size.height,
+            )
+            window.setAlphaValue_(0.0)
+            window.setFrame_display_(start_frame, False)
+            window.orderFrontRegardless()
+            with _animation_group(BUBBLE_EFFECT_DURATION_SECONDS):
+                window.animator().setAlphaValue_(1.0)
+                window.animator().setFrame_display_(target_frame, True)
+            return
+
+        if effect == "shake":
+            window.setAlphaValue_(1.0)
+            window.setFrame_display_(target_frame, False)
+            window.orderFrontRegardless()
+            self._start_bubble_shake(target_frame.origin)
+            return
+
+        # "none" (and any future unvalidated fallback): appear instantly.
+        window.setAlphaValue_(1.0)
+        window.setFrame_display_(target_frame, False)
+        window.orderFrontRegardless()
+
+    @objc.python_method
+    def _start_bubble_shake(self, base_origin: AppKit.NSPoint) -> None:
+        self._shake_base_origin = base_origin
+        self._shake_step_index = 0
+        self._fire_bubble_shake_step()
+
+    @objc.python_method
+    def _fire_bubble_shake_step(self) -> None:
+        window = self.bubble_window
+        base_origin = self._shake_base_origin
+        if window is None or base_origin is None:
+            return
+
+        total_steps = BUBBLE_SHAKE_OSCILLATIONS * 2
+        if self._shake_step_index >= total_steps:
+            window.setFrameOrigin_(base_origin)
+            self._shake_base_origin = None
+            return
+
+        direction = 1.0 if self._shake_step_index % 2 == 0 else -1.0
+        x = base_origin.x + direction * BUBBLE_SHAKE_AMPLITUDE_PX
+        window.setFrameOrigin_(Foundation.NSMakePoint(x, base_origin.y))
+        self._shake_step_index += 1
+
+        self.shake_timer = (
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                BUBBLE_SHAKE_STEP_SECONDS, self, "onBubbleShakeStep:", None, False
+            )
+        )
+
+    def onBubbleShakeStep_(self, timer: AppKit.NSTimer) -> None:
+        self._fire_bubble_shake_step()
+
+    @objc.python_method
+    def _cancel_bubble_shake(self) -> None:
+        if self.shake_timer is not None:
+            self.shake_timer.invalidate()
+            self.shake_timer = None
+        self._shake_base_origin = None
+
+    @objc.python_method
     def _reset_hide_timer(self) -> None:
         if self.hide_timer is not None:
             self.hide_timer.invalidate()
@@ -350,6 +457,7 @@ class _OverlayController(AppKit.NSObject):
 
     @objc.python_method
     def _hide_bubble(self) -> None:
+        self._cancel_bubble_shake()
         if self.bubble_window is not None:
             self.bubble_window.orderOut_(None)
         if self.hide_timer is not None:
@@ -367,6 +475,26 @@ class _OverlayController(AppKit.NSObject):
         # launch. No permanent mute / no todo-completion controls here.
         self._invalidate_all_timers()
         self.app.terminate_(None)
+
+
+def _scaled_frame(frame: AppKit.NSRect, scale: float) -> AppKit.NSRect:
+    """`frame` shrunk/grown by `scale`, keeping the same center point."""
+    new_width = frame.size.width * scale
+    new_height = frame.size.height * scale
+    new_x = frame.origin.x + (frame.size.width - new_width) / 2.0
+    new_y = frame.origin.y + (frame.size.height - new_height) / 2.0
+    return Foundation.NSMakeRect(new_x, new_y, new_width, new_height)
+
+
+@contextmanager
+def _animation_group(duration: float) -> Iterator[None]:
+    """Run an `.animator()`-proxied change over `duration` seconds."""
+    AppKit.NSAnimationContext.beginGrouping()
+    try:
+        AppKit.NSAnimationContext.currentContext().setDuration_(duration)
+        yield
+    finally:
+        AppKit.NSAnimationContext.endGrouping()
 
 
 def _make_button(

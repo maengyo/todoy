@@ -33,6 +33,8 @@ class OverlayOptions:
     character_image: Path | None  # user image wins over emoji when set and readable
     language: Language
     test_seconds: float | None  # auto-quit after N seconds; None = run forever
+    movement: str = "walk"  # one of animations.MOVEMENTS
+    bubble_effect: str = "pop"  # one of animations.BUBBLE_EFFECTS
 
 
 class OverlayBackend(Protocol):

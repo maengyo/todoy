@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from todoy.display.overlay.base import create_backend
+from todoy.display.characters import Character
+from todoy.display.overlay.base import OverlayOptions, create_backend
 
 
 def test_create_backend_raises_helpful_error_on_non_darwin(
@@ -60,3 +62,29 @@ def test_create_backend_raises_when_appkit_missing_on_darwin(
         create_backend()
 
     assert "todoy[overlay]" in str(exc_info.value)
+
+
+def test_overlay_options_movement_and_bubble_effect_default() -> None:
+    options = OverlayOptions(
+        character=Character(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
+        character_image=None,
+        language="en",
+        test_seconds=None,
+    )
+
+    assert options.movement == "walk"
+    assert options.bubble_effect == "pop"
+
+
+def test_overlay_options_movement_and_bubble_effect_overridable() -> None:
+    options = OverlayOptions(
+        character=Character(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
+        character_image=Path("/tmp/does-not-exist.png"),
+        language="ko",
+        test_seconds=5.0,
+        movement="hop",
+        bubble_effect="shake",
+    )
+
+    assert options.movement == "hop"
+    assert options.bubble_effect == "shake"

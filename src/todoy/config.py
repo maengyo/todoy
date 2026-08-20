@@ -14,6 +14,8 @@ from todoy.sources.builtin import BuiltinSource
 DEFAULT_INTERVAL_MINUTES = 30
 DEFAULT_CHARACTER = "cat"
 DEFAULT_SNOOZE_MINUTES = 5
+DEFAULT_MOVEMENT = "walk"
+DEFAULT_BUBBLE_EFFECT = "pop"
 
 
 @dataclass
@@ -25,6 +27,8 @@ class Config:
     character: str = DEFAULT_CHARACTER
     character_image: Path | None = None
     snooze_minutes: int = DEFAULT_SNOOZE_MINUTES
+    movement: str = DEFAULT_MOVEMENT
+    bubble_effect: str = DEFAULT_BUBBLE_EFFECT
 
 
 def config_path() -> Path:
@@ -118,6 +122,11 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
     snooze_minutes = display.get("snooze_minutes", DEFAULT_SNOOZE_MINUTES)
     if isinstance(snooze_minutes, bool) or not isinstance(snooze_minutes, int):
         raise ValueError("display.snooze_minutes must be an int")
+    movement = _string(display.get("movement", DEFAULT_MOVEMENT), "display.movement")
+    bubble_effect = _string(
+        display.get("bubble_effect", DEFAULT_BUBBLE_EFFECT),
+        "display.bubble_effect",
+    )
 
     return Config(
         enabled_sources=enabled_sources,
@@ -127,6 +136,8 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         character=character,
         character_image=character_image,
         snooze_minutes=snooze_minutes,
+        movement=movement,
+        bubble_effect=bubble_effect,
     )
 
 
@@ -195,6 +206,10 @@ def _config_to_toml(config: Config) -> str:
                 f"snooze_minutes = {config.snooze_minutes}",
             ]
         )
+        if config.movement != DEFAULT_MOVEMENT:
+            lines.append(f"movement = {_toml_string(config.movement)}")
+        if config.bubble_effect != DEFAULT_BUBBLE_EFFECT:
+            lines.append(f"bubble_effect = {_toml_string(config.bubble_effect)}")
 
     return "\n".join(lines) + "\n"
 
@@ -212,6 +227,8 @@ def _should_emit_display_table(config: Config) -> bool:
         config.character != DEFAULT_CHARACTER
         or config.character_image is not None
         or config.snooze_minutes != DEFAULT_SNOOZE_MINUTES
+        or config.movement != DEFAULT_MOVEMENT
+        or config.bubble_effect != DEFAULT_BUBBLE_EFFECT
     )
 
 

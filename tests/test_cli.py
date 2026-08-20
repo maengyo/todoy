@@ -5,6 +5,7 @@ import sys
 import types
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,8 @@ class FakeOverlayOptions:
     character_image: Path | None
     language: str
     test_seconds: float | None
+    movement: str
+    bubble_effect: str
 
 
 class FakeReminderScheduler:
@@ -89,6 +92,32 @@ class FakeOverlayBackend:
         self._state.scheduler = scheduler
         self._state.reminder_text = get_reminder_text()
         return self._state.exit_code
+
+
+def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    animations = types.ModuleType("todoy.display.overlay.animations")
+    movements = ("walk", "hop", "float", "dash", "still")
+    bubble_effects = ("pop", "fade", "slide", "shake", "none")
+
+    def validate_movement(name: str) -> str:
+        if name not in movements:
+            available = ", ".join(movements)
+            msg = f"Unknown movement: {name}. Available: {available}"
+            raise ValueError(msg)
+        return name
+
+    def validate_bubble_effect(name: str) -> str:
+        if name not in bubble_effects:
+            available = ", ".join(bubble_effects)
+            msg = f"Unknown bubble effect: {name}. Available: {available}"
+            raise ValueError(msg)
+        return name
+
+    animations.MOVEMENTS = movements
+    animations.BUBBLE_EFFECTS = bubble_effects
+    animations.validate_movement = validate_movement
+    animations.validate_bubble_effect = validate_bubble_effect
+    monkeypatch.setitem(sys.modules, "todoy.display.overlay.animations", animations)
 
 
 def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,6 +321,9 @@ def test_init_wizard_writes_custom_display_settings(
         character="robot",
         character_image=fake_home / "robot.png",
     )
+    text = config_file.read_text(encoding="utf-8")
+    assert "movement" not in text
+    assert "bubble_effect" not in text
 
 
 def test_init_wizard_invalid_character_reprompts_once_then_defaults(
@@ -636,6 +668,7 @@ def test_overlay_once_prints_reminder_text_without_backend(
     )
     main(["add", "builtin task"])
     capsys.readouterr()
+    install_fake_animation_module(monkeypatch)
     monkeypatch.delitem(sys.modules, "todoy.display.overlay.core", raising=False)
     monkeypatch.delitem(sys.modules, "todoy.display.overlay.base", raising=False)
 
@@ -662,6 +695,7 @@ def test_overlay_backend_runtime_error_prints_stderr_and_exits_1(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
     state = install_fake_overlay_modules(
         monkeypatch,
         backend_error=RuntimeError("todoy overlay currently supports macOS only"),
@@ -685,6 +719,7 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
     state = install_fake_overlay_modules(monkeypatch, exit_code=23)
     image_path = tmp_path / "robot.png"
     save_config(
@@ -712,8 +747,118 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     assert state.options.character_image == image_path
     assert state.options.language == "ko"
     assert state.options.test_seconds == 1.5
+    assert state.options.movement == "walk"
+    assert state.options.bubble_effect == "pop"
     assert state.scheduler is not None
     assert state.scheduler.interval_minutes == 7
     assert state.scheduler.snooze_minutes == 8
     assert state.reminder_text == "ko: builtin task"
     assert data_file.exists()
+
+
+def test_overlay_gui_uses_animation_values_from_config(
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    save_config(Config(movement="float", bubble_effect="fade"), config_file)
+
+    exit_code = main(["overlay"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.options is not None
+    assert state.options.movement == "float"
+    assert state.options.bubble_effect == "fade"
+
+
+def test_overlay_flags_override_animation_values_from_config(
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    save_config(Config(movement="float", bubble_effect="fade"), config_file)
+
+    exit_code = main(["overlay", "--movement", "hop", "--bubble-effect", "shake"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.options is not None
+    assert state.options.movement == "hop"
+    assert state.options.bubble_effect == "shake"
+
+
+def test_overlay_rejects_invalid_cli_animation_choice(
+    data_file: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["overlay", "--movement", "crawl"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "invalid choice: 'crawl'" in captured.err
+    assert "--movement" in captured.err
+    assert not data_file.exists()
+
+
+@pytest.mark.parametrize(
+    ("config_body", "expected_message"),
+    [
+        (
+            '[display]\nmovement = "crawl\\u001b]0;x\\u0007"\n',
+            "Unknown movement: crawl]0;x. Available: walk, hop, float, dash, still\n",
+        ),
+        (
+            '[display]\nbubble_effect = "burst\\u001b]0;x\\u0007"\n',
+            "Unknown bubble effect: burst]0;x. Available: pop, fade, slide, shake, none\n",
+        ),
+    ],
+)
+def test_overlay_rejects_invalid_config_animation_value_with_sanitized_stderr(
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    config_body: str,
+    expected_message: str,
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    install_fake_overlay_modules(monkeypatch)
+    config_file.write_text(config_body, encoding="utf-8")
+
+    exit_code = main(["overlay"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == expected_message
+    assert "\x1b" not in captured.err
+    assert "\x07" not in captured.err
+    assert not data_file.exists()
+
+
+animations_spec = find_spec("todoy.display.overlay.animations")
+
+
+@pytest.mark.skipif(animations_spec is None, reason="todoy.display.overlay.animations unavailable")
+def test_real_overlay_animation_validators_reject_bad_input() -> None:
+    from todoy.display.overlay import animations
+
+    with pytest.raises(ValueError, match="^Unknown movement: crawl\\. Available:"):
+        animations.validate_movement("crawl")
+    with pytest.raises(ValueError, match="^Unknown bubble effect: burst\\. Available:"):
+        animations.validate_bubble_effect("burst")

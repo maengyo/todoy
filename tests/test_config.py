@@ -32,6 +32,8 @@ def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
     assert config.character == "cat"
     assert config.character_image is None
     assert config.snooze_minutes == 5
+    assert config.movement == "walk"
+    assert config.bubble_effect == "pop"
 
 
 def test_config_path_todoy_config_file_wins(
@@ -108,6 +110,25 @@ snooze_minutes = 9
     )
 
 
+def test_load_config_uses_animation_defaults_for_old_display_configs(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[display]
+character = "robot"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.character == "robot"
+    assert config.movement == "walk"
+    assert config.bubble_effect == "pop"
+
+
 def test_load_config_treats_empty_display_image_as_none(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
@@ -163,6 +184,14 @@ character_image = 123
 [display]
 snooze_minutes = "soon"
 """,
+        """
+[display]
+movement = 123
+""",
+        """
+[display]
+bubble_effect = false
+""",
     ],
 )
 def test_load_config_wraps_wrong_types_with_path(tmp_path: Path, body: str) -> None:
@@ -206,6 +235,8 @@ def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
         character="robot",
         character_image=tmp_path / "robot.png",
         snooze_minutes=12,
+        movement="dash",
+        bubble_effect="shake",
     )
     path = tmp_path / "config.toml"
 
@@ -216,7 +247,37 @@ def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
     assert 'character = "robot"' in text
     assert tomllib.loads(text)["display"]["character_image"] == str(tmp_path / "robot.png")
     assert "snooze_minutes = 12" in text
+    assert 'movement = "dash"' in text
+    assert 'bubble_effect = "shake"' in text
     assert load_config(path) == config
+
+
+def test_save_config_round_trips_animation_display_settings(tmp_path: Path) -> None:
+    config = Config(movement="float", bubble_effect="slide")
+    path = tmp_path / "config.toml"
+
+    save_config(config, path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "[display]" in text
+    assert 'movement = "float"' in text
+    assert 'bubble_effect = "slide"' in text
+    assert load_config(path) == config
+
+
+def test_save_config_omits_default_animation_keys_from_nondefault_display_table(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+
+    save_config(Config(character="robot"), path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "[display]" in text
+    assert 'character = "robot"' in text
+    assert "movement" not in text
+    assert "bubble_effect" not in text
+    assert load_config(path) == Config(character="robot")
 
 
 def test_save_config_omits_markdown_table_when_markdown_is_not_enabled(tmp_path: Path) -> None:

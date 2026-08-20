@@ -54,6 +54,15 @@
 - 마크다운 소스가 폴더 스캔 중 심볼릭 링크 파일을 읽지 않도록 수정(폴더 밖을 가리키는 링크가 파일 내용을 todo로 유출할 수 있었음); 고정(pinned) 노트는 예외(명시적 사용자 설정).
 - CLI의 범용 에러 출력도 새니타이즈 — `--character` 에러 메시지가 제어 문자를 stderr에 반사하지 않음.
 
+## M6 (후속) — 2026-08-20
+
+### 결정
+
+- **애니메이션 선택 (이슈 #11).** 캐릭터 이동 프리셋(`walk` 기본, `hop`, `float`, `dash`, `still`)은 `display/overlay/animations.py`의 순수·dt 구동·rng 주입형 상태머신(`CharacterMovement.step(dt) -> (x, y_offset)`)으로 구현하고, macOS 백엔드는 위치만 적용한다. 말풍선 등장 효과(`pop` 기본, `fade`, `slide`, `shake`, `none`)는 백엔드에서 `NSAnimationContext`로 적용.
+- 선택 방법: config의 `[display] movement / bubble_effect` + `todoy overlay --movement/--bubble-effect` (플래그 > config > 기본값). `todoy init`은 의도적으로 확장하지 않음 — 마법사는 짧게 유지.
+- 이름 검증은 `animations.validate_*`(오버레이 경로)에서, config 로드는 타입만 검사 — character 이름과 같은 분리. 알 수 없는 이름은 가능한 목록과 함께 새니타이즈된 stderr + exit 1.
+- 캐릭터 위치 메모: 캐릭터는 하단 가장자리를 배회한다 — 화면 바닥에서 `CHARACTER_BOTTOM_MARGIN = 24px` 위 + 이동 애니메이션의 수직 오프셋(≤40px). 위치(edge) 설정화는 아직 요청되지 않은 후속 후보.
+
 ## M4 — 2026-08-20
 
 ### 결정

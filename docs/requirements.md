@@ -31,6 +31,7 @@ An open-source CLI tool that keeps you from forgetting the day's todos you jotte
 - **Customizable character.** The user can replace the character: use their own image (e.g. a photo) or pick one of the bundled copyright-free characters. Selected via config / `todoy init`.
 - **The character only passes by.** It reminds and teases, but never completes todos for the user, and there is no in-app button to permanently silence it — turning it off requires the user to edit the config themselves (deliberate friction; snooze stays temporary).
 - **Taunting tone.** Reminder messages playfully needle the user about unfinished todos (message pack, en/ko), and the character's entrances carry the same teasing feel.
+- **Selectable animations (added 2026-08-20).** The character's movement (`walk`/`hop`/`float`/`dash`/`still`) and the bubble's entrance (`pop`/`fade`/`slide`/`shake`/`none`) are user-selectable via config (`[display] movement / bubble_effect`) or `todoy overlay --movement/--bubble-effect`.
 - **Pinned files.** Specific files inside a folder can be designated as todo sources — covered by the markdown source's `pinned_notes` config.
 - **Live demo in README.** A recording of the real app (TUI + overlay) is embedded in the GitHub README (M5).
 
