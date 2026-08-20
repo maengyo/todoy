@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 
 import pytest
 
@@ -150,3 +151,35 @@ def test_every_congrats_line_formats_without_keyerror(language: Language) -> Non
 def test_every_taunt_line_mentions_count_placeholder(language: Language) -> None:
     for line in _TAUNT_LINES[language]:
         assert "{count}" in line
+
+
+# --- count=1 plural-agreement regression ----------------------------------
+
+
+def test_taunt_count_one_en_has_no_plural_mismatch() -> None:
+    """Regression: with count=1, English lines must not read "1 things"/"1 todos"
+
+    (hardcoded plural noun/verb agreement bug -- see coordinator note).
+    """
+    for seed in range(50):
+        line = taunt(1, "en", rng=random.Random(seed))
+        assert not re.search(r"\b1 (things|todos)\b", line), line
+
+
+def test_every_taunt_line_is_plural_safe_at_count_one() -> None:
+    """Every English taunt line, individually formatted with count=1, must be
+    free of the "1 things"/"1 todos" mismatch -- not just whichever lines a
+    seeded rng happens to draw.
+    """
+    for line in _TAUNT_LINES["en"]:
+        formatted = line.format(count=1)
+        assert not re.search(r"\b1 (things|todos)\b", formatted), formatted
+
+
+def test_taunt_count_one_ko_is_unaffected() -> None:
+    """Korean count expressions don't inflect for number, so count=1 should
+    format cleanly for every ko taunt line (nothing to regress here, but
+    verify explicitly)."""
+    for line in _TAUNT_LINES["ko"]:
+        formatted = line.format(count=1)
+        assert "1" in formatted

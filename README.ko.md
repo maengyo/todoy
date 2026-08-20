@@ -11,13 +11,16 @@ M3(`todoy tui`), M4(`todoy overlay`, macOS), M5(릴리스 준비: CI, PyPI 배�
 
 ## 데모
 
-<!-- ![todoy 데모](demo/todoy.gif) — 녹화되면 주석 해제 -->
-<!-- ![todoy 오버레이 데모](demo/overlay.gif) — 녹화되면 주석 해제 -->
+실제로 실행 중인 데스크톱 오버레이 — 말이 화면 하단을 질주하며 오늘의 할 일이
+적힌 깃발을 들고 다닙니다 (라이브 앱의 실제 창을 자가 렌더링해 캡처):
 
-CLI/TUI와 macOS 오버레이 녹화는 아직 준비되지 않았습니다 — 어떻게 녹화할지
-(`vhs demo/demo.tape`, macOS 화면 녹화)와 어디에 저장될지(`demo/todoy.gif`,
-`demo/overlay.gif`)는 [docs/demo.ko.md](docs/demo.ko.md)를 참고하세요. 이
-README에 나오는 명령어들은 지금도 모두 그대로 동작합니다.
+![todoy 오버레이: 깃발 든 질주하는 말](demo/overlay-demo.gif)
+
+TUI 실제 출력 (기본 고양이, 그리고 `--ascii` 모드의 달팽이):
+
+![todoy tui](demo/tui.png)
+
+녹화 방법은 [docs/demo.ko.md](docs/demo.ko.md) 참고.
 
 ## 설치 (지금은 소스에서)
 
@@ -113,7 +116,9 @@ $ todoy tui
 
 - `todoy tui --brief`는 한 줄만 출력합니다 — `.zshrc` / `.bashrc`에 넣으면
   새 터미널마다 잔소리를 들을 수 있어요: `🐱 3 todos: 우유 사기 (+2 more)`
-- `--character cat|dog|ghost|robot`, `--lang en|ko`, 이모지 없는 터미널엔 `--ascii`.
+- 캐릭터 15종: cat(기본), dog, ghost, robot, horse, turtle, snail, penguin,
+  frog, bee, owl, unicorn, dino, alien, crab — `--character 이름`,
+  `--lang en|ko`, 이모지 없는 터미널엔 `--ascii`.
 - 메시지는 할 일을 놀리지, 당신을 공격하지 않습니다. 캐릭터는 알려줄 뿐 — 끝내는 건 여전히 당신 몫.
 
 ### 데스크톱 위의 캐릭터 (`todoy overlay`, macOS)

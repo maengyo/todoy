@@ -11,14 +11,17 @@ No version has been published to PyPI yet; install from source for now (below).
 
 ## Demo
 
-<!-- ![todoy demo](demo/todoy.gif) — uncomment when recorded -->
-<!-- ![todoy overlay demo](demo/overlay.gif) — uncomment when recorded -->
+The desktop overlay, actually running — a horse galloping along the screen
+bottom, carrying today's todos on a flag (frames self-rendered from the live
+app's real windows):
 
-CLI/TUI and macOS-overlay recordings aren't made yet — see
-[docs/demo.md](docs/demo.md) for how they'll be recorded (`vhs demo/demo.tape`
-and a macOS screen recording) and where they'll land (`demo/todoy.gif`,
-`demo/overlay.gif`). Every command shown in this README works today
-regardless.
+![todoy overlay: galloping horse with a message flag](demo/overlay-demo.gif)
+
+The TUI, real output (default cat, and the snail in `--ascii` mode):
+
+![todoy tui](demo/tui.png)
+
+See [docs/demo.md](docs/demo.md) for how recordings are made.
 
 ## Install (from source, for now)
 
@@ -118,7 +121,9 @@ $ todoy tui
 
 - `todoy tui --brief` prints a single line — drop it in your `.zshrc` / `.bashrc`
   to get nagged by every new terminal: `🐱 3 todos: buy milk (+2 more)`
-- `--character cat|dog|ghost|robot`, `--lang en|ko`, `--ascii` for emoji-free terminals.
+- 15 characters to choose from: cat (default), dog, ghost, robot, horse,
+  turtle, snail, penguin, frog, bee, owl, unicorn, dino, alien, crab —
+  `--character NAME`, `--lang en|ko`, `--ascii` for emoji-free terminals.
 - Messages tease your todos, never you. The character reminds — finishing them is still your job.
 
 ### A character on your desktop (`todoy overlay`, macOS)

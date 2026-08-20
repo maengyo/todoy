@@ -18,12 +18,12 @@ _LANGUAGES: tuple[Language, ...] = ("en", "ko")
 # count >= 1: still-open-todos taunts, teasing but affectionate.
 _TAUNT_LINES: dict[Language, list[str]] = {
     "en": [
-        "Still {count} todos. They won't do themselves, you know.",
-        "{count} todos are staring at you. Blink first?",
-        "Look at that -- {count} things still waiting on you.",
-        "{count} todos, zero excuses. I'm just saying.",
+        "Still {count} on your list. They won't do themselves, you know.",
+        "{count} still staring at you. Blink first?",
+        "Look at that -- {count} still waiting on you.",
+        "{count} left, zero excuses. I'm just saying.",
         "You've got {count} left. I'll be here. Watching.",
-        "{count} todos and counting. No pressure. (Some pressure.)",
+        "{count} and counting. No pressure. (Some pressure.)",
     ],
     "ko": [
         "아직 {count}개 남았는데? 할 일이 스스로 사라지진 않아.",

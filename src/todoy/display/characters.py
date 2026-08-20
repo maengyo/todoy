@@ -20,6 +20,16 @@ CHARACTERS: dict[str, Character] = {
     "ghost": Character(name="ghost", emoji="👻", ascii_art="(o_o)"),
     "robot": Character(name="robot", emoji="🤖", ascii_art="[o_o]"),
     "horse": Character(name="horse", emoji="🐎", ascii_art=">>=(oo)=>>"),
+    "alien": Character(name="alien", emoji="👾", ascii_art="d[o_o]b"),
+    "bee": Character(name="bee", emoji="🐝", ascii_art="/\\/\\(o.o)/\\/\\"),
+    "crab": Character(name="crab", emoji="🦀", ascii_art="(\\/)!_!(\\/)"),
+    "dino": Character(name="dino", emoji="🦖", ascii_art="~^~(0v0)~^~"),
+    "frog": Character(name="frog", emoji="🐸", ascii_art="(o)(o):v"),
+    "owl": Character(name="owl", emoji="🦉", ascii_art=",(O)(O),"),
+    "penguin": Character(name="penguin", emoji="🐧", ascii_art="<('-')>"),
+    "snail": Character(name="snail", emoji="🐌", ascii_art="~~~@(o.o)"),
+    "turtle": Character(name="turtle", emoji="🐢", ascii_art="_/=(o.o)=\\_"),
+    "unicorn": Character(name="unicorn", emoji="🦄", ascii_art="*>>=(^.^)=>>*"),
 }
 
 _DEFAULT_CHARACTER_NAME = "cat"

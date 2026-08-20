@@ -9,6 +9,10 @@ def test_characters_has_at_least_four_entries() -> None:
     assert len(CHARACTERS) >= 4
 
 
+def test_characters_has_at_least_fifteen_entries() -> None:
+    assert len(CHARACTERS) >= 15
+
+
 def test_characters_include_cat_default() -> None:
     assert "cat" in CHARACTERS
 
@@ -48,6 +52,38 @@ def test_characters_include_horse() -> None:
 
 def test_horse_has_expected_emoji() -> None:
     assert CHARACTERS["horse"].emoji == "🐎"
+
+
+NEW_CHARACTER_EMOJI = {
+    "turtle": "🐢",
+    "snail": "🐌",
+    "penguin": "🐧",
+    "frog": "🐸",
+    "bee": "🐝",
+    "owl": "🦉",
+    "unicorn": "🦄",
+    "dino": "🦖",
+    "alien": "👾",
+    "crab": "🦀",
+}
+
+
+@pytest.mark.parametrize(("name", "emoji"), list(NEW_CHARACTER_EMOJI.items()))
+def test_new_character_is_registered_with_expected_emoji(name: str, emoji: str) -> None:
+    assert name in CHARACTERS
+    assert CHARACTERS[name].emoji == emoji
+
+
+@pytest.mark.parametrize("name", list(NEW_CHARACTER_EMOJI))
+def test_new_character_is_resolvable_via_get_character(name: str) -> None:
+    character = get_character(name)
+    assert character.name == name
+    assert character.emoji == NEW_CHARACTER_EMOJI[name]
+
+
+def test_all_expected_names_present() -> None:
+    expected = {"cat", "dog", "ghost", "robot", "horse", *NEW_CHARACTER_EMOJI}
+    assert expected == set(CHARACTERS)
 
 
 def test_get_character_returns_character_dataclass_instance() -> None:
