@@ -89,6 +89,26 @@ def test_full_render_passes_ko_language_to_taunt(monkeypatch: pytest.MonkeyPatch
     assert rendered.endswith("(=^.^=)")
 
 
+def test_full_render_prefixes_timed_builtin_and_markdown_todos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_messages(monkeypatch)
+    from todoy.display.tui import render_tui
+
+    rendered = render_tui(
+        [
+            Todo(text="회의", id=3, source="builtin", at="14:00"),
+            Todo(text="문서 읽기", source="markdown", at="09:30"),
+        ],
+        character=FakeCharacter(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
+        language="en",
+        use_emoji=True,
+    )
+
+    assert "[#3] 14:00 회의" in rendered
+    assert "* 09:30 문서 읽기" in rendered
+
+
 def test_brief_render_handles_zero_one_and_many_todos(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_messages(monkeypatch)
     from todoy.display.tui import render_tui
@@ -127,6 +147,24 @@ def test_brief_render_handles_zero_one_and_many_todos(monkeypatch: pytest.Monkey
         )
         == "🐱 3 todos: first (+2 more)"
     )
+
+
+def test_brief_render_prefixes_timed_first_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_messages(monkeypatch)
+    from todoy.display.tui import render_tui
+
+    rendered = render_tui(
+        [
+            Todo(text="회의", id=1, source="builtin", at="14:00"),
+            Todo(text="second", source="markdown"),
+        ],
+        character=FakeCharacter(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
+        language="en",
+        brief=True,
+        use_emoji=True,
+    )
+
+    assert rendered == "🐱 2 todos: 14:00 회의 (+1 more)"
 
 
 def test_full_render_truncates_todo_lines_to_sixty_columns(

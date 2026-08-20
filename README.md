@@ -57,6 +57,22 @@ $ todoy list --all
 Todos live in `~/.local/share/todoy/todos.json` (honors `XDG_DATA_HOME`;
 override the file entirely with the `TODOY_DATA_FILE` environment variable).
 
+### Time alarms
+
+Give a todo a time and the overlay pops that message — and only that message —
+right on time:
+
+```console
+$ todoy add "standup meeting" --at 9:55
+Added #3: standup meeting
+
+$ todoy list
+  3. 09:55 standup meeting
+```
+
+Markdown notes work too: `- [ ] 14:00 회의` fires at 14:00. Alarms fire once
+per day per todo (snooze re-arms them), independent of the periodic reminder.
+
 ### Pull todos from your notes (Obsidian-friendly)
 
 Run `todoy init` and point todoy at any folder of markdown files — an Obsidian

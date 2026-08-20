@@ -240,6 +240,82 @@ def test_symlinked_md_in_folder_pointing_outside_is_not_scanned(tmp_path):
     assert src.get_todos() == []
 
 
+def test_checkbox_with_leading_time_token(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- [ ] 14:00 회의\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    todos = src.get_todos()
+    assert [t.text for t in todos] == ["회의"]
+    assert todos[0].at == "14:00"
+
+
+def test_plain_dash_with_leading_time_token_pads_hour(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- 9:30 회의\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    todos = src.get_todos()
+    assert [t.text for t in todos] == ["회의"]
+    assert todos[0].at == "09:30"
+
+
+def test_time_only_checkbox_line_skipped(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- [ ] 14:00\n- [ ] real task\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    assert [t.text for t in src.get_todos()] == ["real task"]
+
+
+def test_time_only_plain_dash_line_skipped(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- 9:30\n- real task\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    assert [t.text for t in src.get_todos()] == ["real task"]
+
+
+def test_invalid_time_token_stays_plain_text(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- [ ] 14:60 회의\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    todos = src.get_todos()
+    assert [t.text for t in todos] == ["14:60 회의"]
+    assert todos[0].at is None
+
+
+def test_out_of_range_hour_token_stays_plain_text(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- [ ] 24:00 회의\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    todos = src.get_todos()
+    assert [t.text for t in todos] == ["24:00 회의"]
+    assert todos[0].at is None
+
+
+def test_non_time_leading_token_stays_plain_text(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- [ ] 9:5 회의\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    todos = src.get_todos()
+    assert [t.text for t in todos] == ["9:5 회의"]
+    assert todos[0].at is None
+
+
+def test_todo_without_time_token_has_at_none(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- [ ] no time here\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    todos = src.get_todos()
+    assert todos[0].at is None
+    assert todos[0].text == "no time here"
+
+
+def test_time_token_in_nested_indented_checkbox(tmp_path):
+    note = tmp_path / "note.md"
+    _touch(note, "- [ ] parent\n  - [ ] 08:00 nested child\n", TODAY)
+    src = MarkdownSource(folder=tmp_path, today=TODAY)
+    todos = src.get_todos()
+    assert [(t.text, t.at) for t in todos] == [("parent", None), ("nested child", "08:00")]
+
+
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform does not support symlinks")
 def test_pinned_symlink_still_works(tmp_path):
     outside_dir = tmp_path / "outside"

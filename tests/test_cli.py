@@ -77,6 +77,7 @@ class FakeOverlayState:
     options: FakeOverlayOptions | None = None
     scheduler: FakeReminderScheduler | None = None
     reminder_text: str | None = None
+    todos: list[Todo] | None = None
 
 
 class FakeOverlayBackend:
@@ -88,10 +89,12 @@ class FakeOverlayBackend:
         options: FakeOverlayOptions,
         scheduler: FakeReminderScheduler,
         get_reminder_text: Callable[[], str],
+        get_todos: Callable[[], list[Todo]],
     ) -> int:
         self._state.options = options
         self._state.scheduler = scheduler
         self._state.reminder_text = get_reminder_text()
+        self._state.todos = get_todos()
         return self._state.exit_code
 
 
@@ -373,6 +376,37 @@ def test_add_prints_contract_message_and_persists(
     assert data_file.exists()
 
 
+def test_add_at_parses_and_persists_without_echoing_time(
+    data_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(["add", "회의", "--at", "9:05"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "Added #1: 회의\n"
+    assert captured.err == ""
+    todo = BuiltinSource().list_todos(include_done=True)[0]
+    assert todo.text == "회의"
+    assert todo.at == "09:05"
+    assert data_file.exists()
+
+
+def test_add_at_invalid_input_prints_sanitized_stderr_and_exits_1(
+    data_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(["add", "회의", "--at", "25:00\x1b]0;pwned\x07"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "invalid time" in captured.err
+    assert "expected 'HH:MM'" in captured.err
+    assert "\x1b" not in captured.err
+    assert "\x07" not in captured.err
+    assert "Traceback" not in captured.err
+    assert not data_file.exists()
+
+
 def test_done_prints_contract_message(data_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
     main(["add", "finish report"])
     capsys.readouterr()
@@ -441,6 +475,22 @@ def test_list_prints_open_todos_in_order(
     assert data_file.exists()
 
 
+def test_list_prefixes_timed_open_todos(
+    data_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["add", "회의", "--at", "14:00"])
+    main(["add", "second"])
+    capsys.readouterr()
+
+    exit_code = main(["list"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "  1. 14:00 회의\n  2. second\n"
+    assert captured.err == ""
+    assert data_file.exists()
+
+
 def test_list_all_marks_done_items(data_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
     main(["add", "open task"])
     main(["add", "completed task"])
@@ -452,6 +502,22 @@ def test_list_all_marks_done_items(data_file: Path, capsys: pytest.CaptureFixtur
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == "  1. open task\n  2. [x] completed task\n"
+    assert captured.err == ""
+    assert data_file.exists()
+
+
+def test_list_all_prefixes_timed_done_items(
+    data_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["add", "completed task", "--at", "14:00"])
+    main(["done", "1"])
+    capsys.readouterr()
+
+    exit_code = main(["list", "--all"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "  1. [x] 14:00 completed task\n"
     assert captured.err == ""
     assert data_file.exists()
 
@@ -502,6 +568,32 @@ def test_list_renders_markdown_source_after_builtin_block(
     assert captured.out == "  1. builtin task\n  - markdown task]0;pwned\n"
     assert captured.err == ""
     assert data_file.exists()
+
+
+def test_list_prefixes_timed_markdown_source_todos(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import todoy.cli as cli
+
+    def collect_todos(
+        *,
+        include_done: bool,
+        config: Config | None = None,
+    ) -> tuple[list[Todo], list[Todo]]:
+        del include_done, config
+        return [], [Todo(text="회의", source="markdown", at="14:00")]
+
+    monkeypatch.setattr(cli, "_collect_todos", collect_todos)
+
+    exit_code = main(["list"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "  - 14:00 회의\n"
+    assert captured.err == ""
+    assert not data_file.exists()
 
 
 def test_list_config_error_prints_stderr_and_exits_1(
@@ -766,6 +858,8 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     assert state.scheduler.interval_minutes == 7
     assert state.scheduler.snooze_minutes == 8
     assert state.reminder_text == "ko: builtin task"
+    assert state.todos is not None
+    assert [todo.text for todo in state.todos] == ["builtin task"]
     assert data_file.exists()
 
 

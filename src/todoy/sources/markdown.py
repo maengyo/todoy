@@ -7,7 +7,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-from todoy.models import Todo
+from todoy.models import Todo, parse_at
 from todoy.sources.base import Source
 
 # Matches "- [ ] text", "- [x] text", "- [X] text" (space between "]" and text
@@ -17,8 +17,29 @@ from todoy.sources.base import Source
 _CHECKBOX_RE = re.compile(r"^- \[([ xX])\](.*)$")
 
 
-def _parse_line(line: str) -> str | None:
-    """Return the open-todo text for a markdown line, or None if not one.
+def _split_leading_time_token(text: str) -> tuple[str | None, str]:
+    """Split a leading "HH:MM"/"H:MM" time token off of todo text.
+
+    If the first whitespace-delimited token in `text` is a valid 24h time,
+    return (canonical "HH:MM", remaining text with the token removed).
+    Otherwise the token isn't a time (or isn't valid), so the text is
+    returned unchanged with at=None.
+    """
+    parts = text.split(None, 1)
+    if not parts:
+        return None, text
+
+    try:
+        at = parse_at(parts[0])
+    except ValueError:
+        return None, text
+
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    return at, rest
+
+
+def _parse_line(line: str) -> tuple[str, str | None] | None:
+    """Return (text, at) for a markdown line's open todo, or None if not one.
 
     Rules (applied to the line after str.strip()):
       - "- [ ] text"            -> open todo, text
@@ -26,6 +47,11 @@ def _parse_line(line: str) -> str | None:
       - "- text" (plain dash)   -> open todo, text
       - anything else           -> not a todo (None)
     Empty text after a recognized marker is treated as "not a todo".
+
+    If the marker's text starts with a valid "H?H:MM" time token, that
+    token becomes `at` and is stripped from `text`. A line that is ONLY a
+    time token (nothing left after stripping it) is treated as "not a
+    todo", same as any other empty-text line.
     """
     stripped = line.strip()
 
@@ -34,18 +60,21 @@ def _parse_line(line: str) -> str | None:
         box, rest = match.group(1), match.group(2)
         if box in ("x", "X"):
             return None
-        text = rest.strip()
-        return text or None
+        raw_text = rest.strip()
+    elif stripped.startswith("- "):
+        raw_text = stripped[2:].strip()
+    else:
+        return None
 
-    if stripped.startswith("- "):
-        text = stripped[2:].strip()
-        return text or None
+    if not raw_text:
+        return None
 
-    return None
+    at, text = _split_leading_time_token(raw_text)
+    return (text, at) if text else None
 
 
-def _extract_todos(text: str) -> list[str]:
-    """Return the open-todo texts found in a note's contents, in file order."""
+def _extract_todos(text: str) -> list[tuple[str, str | None]]:
+    """Return the open-todo (text, at) pairs found in a note, in file order."""
     todos = []
     for line in text.splitlines():
         item = _parse_line(line)
@@ -91,10 +120,12 @@ class MarkdownSource(Source):
         text = self._read(path)
         if text is None:
             return
-        for item in _extract_todos(text):
-            if item not in seen_texts:
-                seen_texts.add(item)
-                todos.append(Todo(text=item, done=False, id=None, source=self.name))
+        for item_text, item_at in _extract_todos(text):
+            if item_text not in seen_texts:
+                seen_texts.add(item_text)
+                todos.append(
+                    Todo(text=item_text, done=False, id=None, source=self.name, at=item_at)
+                )
 
     def _scan_today_files(self, exclude: set[Path]) -> list[Path]:
         # Symlinked files are excluded here (but not from `exclude`, i.e. pinned

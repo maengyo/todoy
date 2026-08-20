@@ -198,3 +198,54 @@ def test_default_path_falls_back_to_home(fake_home, monkeypatch):
     src = BuiltinSource()
     expected = fake_home / ".local" / "share" / "todoy" / "todos.json"
     assert src.path == expected
+
+
+def test_add_without_at_defaults_to_none(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json")
+    todo = src.add("buy milk")
+    assert todo.at is None
+
+
+def test_add_with_at_stores_canonical_padded_form(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json")
+    todo = src.add("meeting", at="9:30")
+    assert todo.at == "09:30"
+
+
+def test_add_with_invalid_at_raises_valueerror(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json")
+    with pytest.raises(ValueError):
+        src.add("meeting", at="24:00")
+
+
+def test_at_round_trips_through_json(tmp_path):
+    path = tmp_path / "todos.json"
+    src = BuiltinSource(path=path)
+    added = src.add("meeting", at="14:00")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["todos"][0]["at"] == "14:00"
+
+    src2 = BuiltinSource(path=path)
+    reloaded = src2.list_todos(include_done=True)
+    assert reloaded[0].at == "14:00"
+    assert reloaded[0] == added
+
+
+def test_old_json_file_without_at_key_loads_with_at_none(tmp_path):
+    # Simulates a todos.json written before the `at` field existed.
+    path = tmp_path / "todos.json"
+    legacy_row = {"id": 1, "text": "legacy task", "done": False, "source": "builtin"}
+    path.write_text(json.dumps({"todos": [legacy_row]}), encoding="utf-8")
+    src = BuiltinSource(path=path)
+    todos = src.list_todos()
+    assert todos[0].at is None
+    assert todos[0].text == "legacy task"
+
+
+def test_done_preserves_at(tmp_path):
+    path = tmp_path / "todos.json"
+    src = BuiltinSource(path=path)
+    todo = src.add("meeting", at="14:00")
+    updated = src.done(todo.id)
+    assert updated.at == "14:00"

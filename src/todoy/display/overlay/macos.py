@@ -20,6 +20,7 @@ import Foundation
 import objc
 
 from todoy.display.overlay.animations import CharacterMovement
+from todoy.display.overlay.core import AlarmClock, build_alarm_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
     from todoy.display.overlay.base import OverlayOptions
     from todoy.display.overlay.core import ReminderScheduler
+    from todoy.models import Todo
 
 # --- tunables ----------------------------------------------------------------
 
@@ -96,12 +98,13 @@ class MacOSOverlayBackend:
         options: OverlayOptions,
         scheduler: ReminderScheduler,
         get_reminder_text: Callable[[], str],
+        get_todos: Callable[[], list[Todo]],
     ) -> int:
         app = AppKit.NSApplication.sharedApplication()
         app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
         controller = _OverlayController.alloc().init()
-        controller.configure(options, scheduler, get_reminder_text, app)
+        controller.configure(options, scheduler, get_reminder_text, get_todos, app)
         controller.start()
 
         # `self` stays on the stack for the whole blocking app.run() call
@@ -121,11 +124,17 @@ class _OverlayController(AppKit.NSObject):
         options: OverlayOptions,
         scheduler: ReminderScheduler,
         get_reminder_text: Callable[[], str],
+        get_todos: Callable[[], list[Todo]],
         app: AppKit.NSApplication,
     ) -> _OverlayController:
         self.options = options
         self.scheduler = scheduler
         self.get_reminder_text = get_reminder_text
+        self.get_todos = get_todos
+        self.alarm_clock = AlarmClock(scheduler.snooze_minutes)
+        # Whether the bubble currently on screen is an alarm (vs. the regular
+        # interval reminder) -- decides what Snooze re-arms.
+        self._showing_alarm = False
         self.app = app
         self.movement: CharacterMovement | None = None
         self.char_window: AppKit.NSWindow | None = None
@@ -273,6 +282,26 @@ class _OverlayController(AppKit.NSObject):
     # --- reminder scheduling -------------------------------------------------
 
     def onReminderTick_(self, timer: AppKit.NSTimer) -> None:
+        self.alarm_clock.update(self.get_todos())
+        due = self.alarm_clock.due()
+        if due:
+            # A timed alarm firing shows its own message immediately,
+            # overriding whatever the bubble currently shows -- independent
+            # of (and without disturbing) the interval scheduler's own
+            # cadence below.
+            self._show_alarm(due)
+            return
+
+        if self._alarm_is_blocking():
+            # An alarm is still on screen from an earlier tick (not newly
+            # due this tick, so the `due` branch above didn't run) -- hold
+            # off on the interval reminder rather than clobbering it.
+            # `scheduler.fired()` is deliberately NOT called here, so
+            # `should_fire()` stays true and the very next tick after the
+            # alarm clears (auto-hide/snooze/replaced by a newer alarm)
+            # shows the deferred reminder and resumes normal cadence.
+            return
+
         if self.scheduler.should_fire():
             self._show_reminder()
             self.scheduler.fired()
@@ -281,8 +310,24 @@ class _OverlayController(AppKit.NSObject):
         # Guaranteed early reminder so the user sees the overlay works,
         # regardless of the configured interval. Also resets the regular
         # schedule from this point so a second reminder does not double-fire.
+        # Deferred (see onReminderTick_) if an alarm already claimed the
+        # bubble by the time this one-shot timer fires -- the regular 1s
+        # tick's should_fire()/blocking check picks up the slack from here.
+        if self._alarm_is_blocking():
+            return
         self._show_reminder()
         self.scheduler.fired()
+
+    @objc.python_method
+    def _alarm_is_blocking(self) -> bool:
+        """Whether an alarm message is currently on screen and must not be
+        replaced by an interval reminder (see `onReminderTick_`/`onFirstFire_`).
+        """
+        return (
+            self._showing_alarm
+            and self.bubble_window is not None
+            and self.bubble_window.isVisible()
+        )
 
     def onTestTimeout_(self, timer: AppKit.NSTimer) -> None:
         self._invalidate_all_timers()
@@ -316,7 +361,16 @@ class _OverlayController(AppKit.NSObject):
 
     @objc.python_method
     def _show_reminder(self) -> None:
-        text = self.get_reminder_text()
+        self._showing_alarm = False
+        self._show_message(self.get_reminder_text())
+
+    @objc.python_method
+    def _show_alarm(self, due_todos: list[Todo]) -> None:
+        self._showing_alarm = True
+        self._show_message(build_alarm_text(due_todos, self.options.language))
+
+    @objc.python_method
+    def _show_message(self, text: str) -> None:
         if self.bubble_window is None:
             self._build_bubble_window()
         assert self.bubble_window is not None
@@ -594,7 +648,10 @@ class _OverlayController(AppKit.NSObject):
     # --- bubble button actions ----------------------------------------------
 
     def onSnoozeClicked_(self, sender: AppKit.NSButton) -> None:
-        self.scheduler.snooze()
+        if self._showing_alarm:
+            self.alarm_clock.snooze_last()
+        else:
+            self.scheduler.snooze()
         self._hide_bubble()
 
     def onQuitClicked_(self, sender: AppKit.NSButton) -> None:

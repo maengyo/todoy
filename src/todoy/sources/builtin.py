@@ -7,7 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from todoy.models import Todo
+from todoy.models import Todo, parse_at
 from todoy.sources.base import Source
 
 
@@ -37,10 +37,12 @@ class BuiltinSource(Source):
         """Return today's open (not done) todos."""
         return self.list_todos(include_done=False)
 
-    def add(self, text: str) -> Todo:
+    def add(self, text: str, at: str | None = None) -> Todo:
+        if at is not None:
+            at = parse_at(at)
         todos = self._load()
         next_id = max((t.id for t in todos if t.id is not None), default=0) + 1
-        todo = Todo(text=text, done=False, id=next_id, source=self.name)
+        todo = Todo(text=text, done=False, id=next_id, source=self.name, at=at)
         todos.append(todo)
         self._save(todos)
         return todo
@@ -49,7 +51,9 @@ class BuiltinSource(Source):
         todos = self._load()
         for i, todo in enumerate(todos):
             if todo.id == todo_id:
-                updated = Todo(text=todo.text, done=True, id=todo.id, source=todo.source)
+                updated = Todo(
+                    text=todo.text, done=True, id=todo.id, source=todo.source, at=todo.at
+                )
                 todos[i] = updated
                 self._save(todos)
                 return updated

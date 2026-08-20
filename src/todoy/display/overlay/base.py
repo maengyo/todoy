@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from todoy.display.characters import Character
     from todoy.display.messages import Language
     from todoy.display.overlay.core import ReminderScheduler
+    from todoy.models import Todo
 
 _INSTALL_HINT = (
     "todoy overlay currently supports macOS only. On macOS, install the overlay "
@@ -46,8 +47,15 @@ class OverlayBackend(Protocol):
         options: OverlayOptions,
         scheduler: ReminderScheduler,
         get_reminder_text: Callable[[], str],
+        get_todos: Callable[[], list[Todo]],
     ) -> int:
-        """Run the overlay event loop until quit; return the process exit code."""
+        """Run the overlay event loop until quit; return the process exit code.
+
+        `get_todos` is polled on the same 1s cadence as the reminder check so
+        the backend can drive a `core.AlarmClock` with a fresh todo list --
+        kept separate from `get_reminder_text` because the alarm check needs
+        the todo objects themselves (for `todo.at`), not pre-rendered text.
+        """
         ...
 
 

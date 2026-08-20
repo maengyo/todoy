@@ -2,16 +2,32 @@ from __future__ import annotations
 
 import random
 import unicodedata
+from datetime import datetime, timedelta
 
 import pytest
 
-from todoy.display.overlay.core import ReminderScheduler, build_reminder_text
+from todoy.display.overlay.core import (
+    AlarmClock,
+    ReminderScheduler,
+    build_alarm_text,
+    build_reminder_text,
+)
 from todoy.models import Todo
 
 
 def _display_width(text: str) -> int:
     """Mirror core's east_asian_width-based column counting for assertions."""
     return sum(2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1 for ch in text)
+
+
+def _todo(
+    text: str, at: str | None = None, *, id: int | None = None, source: str = "builtin"
+) -> Todo:
+    """Build a `Todo` with an alarm time -- a thin convenience wrapper so the
+    tests below read as `_todo("회의", at="14:00")` instead of repeating the
+    other three (irrelevant, defaulted) `Todo` fields everywhere.
+    """
+    return Todo(text=text, at=at, id=id, source=source)
 
 
 class FakeClock:
@@ -25,6 +41,22 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self._now += seconds
+
+
+class FakeDateTimeClock:
+    """A settable wall-clock-style clock for deterministic AlarmClock tests."""
+
+    def __init__(self, start: datetime) -> None:
+        self._now = start
+
+    def __call__(self) -> datetime:
+        return self._now
+
+    def advance(self, **kwargs: float) -> None:
+        self._now += timedelta(**kwargs)
+
+    def set(self, value: datetime) -> None:
+        self._now = value
 
 
 # --- ReminderScheduler ------------------------------------------------------
@@ -236,3 +268,309 @@ def test_build_reminder_text_korean_language() -> None:
     text = build_reminder_text([], "ko", rng=random.Random(1))
 
     assert text != ""
+
+
+# --- AlarmClock ---------------------------------------------------------------
+
+
+def test_alarm_fires_at_exact_scheduled_minute() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+
+    assert alarm.due() == [todo]
+
+
+def test_alarm_does_not_fire_before_scheduled_minute() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 13, 59))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+
+    assert alarm.due() == []
+
+
+def test_alarm_missed_within_ten_minutes_fires_once_as_catch_up() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 9))  # overlay woke up late
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+    # Does not refire on the very next tick either.
+    clock.advance(seconds=1)
+    alarm.update([todo])
+    assert alarm.due() == []
+
+
+def test_alarm_missed_by_more_than_ten_minutes_is_skipped_silently() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 11))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+    assert alarm.due() == []
+
+    # And it stays skipped forever after -- the gap only grows.
+    clock.advance(hours=1)
+    alarm.update([todo])
+    assert alarm.due() == []
+
+
+def test_alarm_fired_today_never_refires_on_later_ticks() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+    clock.advance(seconds=30)
+    alarm.update([todo])
+    assert alarm.due() == []
+
+    clock.advance(minutes=5)
+    alarm.update([todo])
+    assert alarm.due() == []
+
+
+def test_alarm_snooze_last_refires_after_snooze_minutes() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+    alarm.snooze_last()
+    assert alarm.due() == []
+
+    clock.advance(minutes=4, seconds=59)
+    alarm.update([todo])
+    assert alarm.due() == []  # not yet -- still inside the snooze window
+
+    clock.advance(seconds=1)
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+    # And after re-firing via snooze, it goes back to not refiring again.
+    clock.advance(seconds=1)
+    alarm.update([todo])
+    assert alarm.due() == []
+
+
+def test_alarm_snooze_last_with_nothing_due_is_a_no_op() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+
+    alarm.snooze_last()  # must not raise
+
+    assert alarm.due() == []
+
+
+def test_alarm_snooze_last_works_several_empty_ticks_after_firing() -> None:
+    # Regression: due() is only non-empty on the exact tick something fires;
+    # a backend polls every ~1s, so by the time a user actually clicks
+    # Snooze several ticks later, due() has long since gone back to [].
+    # snooze_last() must still act on the alarm that's still on screen.
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+    # Several more ticks pass with the alarm already fired (due() empty),
+    # exactly as a real 1s-polling backend would see while the bubble sits
+    # on screen waiting for a user click.
+    for _ in range(5):
+        clock.advance(seconds=1)
+        alarm.update([todo])
+        assert alarm.due() == []
+
+    alarm.snooze_last()  # must still re-arm the todo that fired 5 ticks ago
+
+    clock.advance(minutes=5)
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+
+def test_alarm_snooze_last_spanning_midnight_still_refires() -> None:
+    # Regression: rollover used to wipe pending snoozes outright, and even
+    # once it didn't, a same-day-only identity key would still fail to match
+    # after the date changed underneath it.
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 23, 58))
+    alarm = AlarmClock(snooze_minutes=10, now=clock)
+    todo = _todo("회의", at="23:58")
+
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+    alarm.snooze_last()
+
+    clock.set(datetime(2026, 8, 21, 0, 7, 59))
+    alarm.update([todo])
+    assert alarm.due() == []  # not yet -- 1s short of the snooze target
+
+    clock.set(datetime(2026, 8, 21, 0, 8, 0))
+    alarm.update([todo])
+    assert alarm.due() == [todo]  # fires the next day, as snoozed
+
+    # And it still won't refire again for the (new) rest of that day.
+    clock.advance(seconds=1)
+    alarm.update([todo])
+    assert alarm.due() == []
+
+
+def test_alarm_catch_up_at_exactly_ten_minutes_still_fires() -> None:
+    # The catch-up window is inclusive: "within the last 10 minutes" means
+    # exactly 10:00 late still counts, 10:01 late does not (the next test).
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 10))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+
+    assert alarm.due() == [todo]
+
+
+def test_alarm_catch_up_one_second_past_ten_minutes_is_skipped() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 10, 1))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+
+    assert alarm.due() == []
+
+
+def test_alarm_midnight_rollover_resets_fired_set() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+    clock.advance(seconds=30)
+    alarm.update([todo])
+    assert alarm.due() == []  # fired today already
+
+    # Next day, same time-of-day -- a fresh alarm, must fire again.
+    clock.set(datetime(2026, 8, 21, 14, 0))
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+
+def test_alarm_todos_without_at_are_ignored() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("no time set")  # at=None
+
+    alarm.update([todo])
+
+    assert alarm.due() == []
+
+
+def test_alarm_removed_todo_does_not_fire() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    todo = _todo("회의", at="14:00")
+
+    # The todo was deleted/completed before the first tick that would have
+    # seen it due -- update() is never even called with it in the list.
+    alarm.update([])
+
+    assert alarm.due() == []
+
+    # Even if the same identity later reappears in the list mid-window, it
+    # is a distinct call to update(); confirm it still behaves normally
+    # (fires) rather than being permanently poisoned by the earlier absence.
+    alarm.update([todo])
+    assert alarm.due() == [todo]
+
+
+def test_alarm_multiple_simultaneous_todos_all_fire() -> None:
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    first = _todo("회의", at="14:00")
+    second = _todo("water plants", at="14:00")
+
+    alarm.update([first, second])
+
+    assert alarm.due() == [first, second]
+
+
+def test_alarm_clock_defaults_to_wall_clock_now() -> None:
+    alarm = AlarmClock(snooze_minutes=5)
+
+    # Just confirm no injected clock still works without raising.
+    alarm.update([])
+
+    assert alarm.due() == []
+
+
+# --- build_alarm_text ----------------------------------------------------------
+
+
+def test_build_alarm_text_empty_list_is_empty_string() -> None:
+    assert build_alarm_text([], "en") == ""
+
+
+def test_build_alarm_text_single_due_todo_is_headline_then_text() -> None:
+    todo = _todo("회의", at="14:00")
+
+    text = build_alarm_text([todo], "en")
+
+    assert text == "⏰ 14:00\n회의"
+
+
+def test_build_alarm_text_excludes_taunt_and_only_shows_due_todos() -> None:
+    todo = _todo("water plants", at="09:05")
+
+    text = build_alarm_text([todo], "en")
+
+    assert text == "⏰ 09:05\nwater plants"
+
+
+def test_build_alarm_text_multiple_due_todos_one_combined_line_each() -> None:
+    first = _todo("회의", at="14:00")
+    second = _todo("water plants", at="14:00")
+
+    text = build_alarm_text([first, second], "en")
+
+    assert text == "⏰ 14:00 회의\n⏰ 14:00 water plants"
+
+
+def test_build_alarm_text_sanitizes_control_characters() -> None:
+    todo = _todo("danger\x07bell", at="09:00")
+
+    text = build_alarm_text([todo], "en")
+
+    assert "\x07" not in text
+    assert "dangerbell" in text
+
+
+def test_build_alarm_text_truncates_long_single_todo_text() -> None:
+    todo = _todo("x" * 200, at="09:00")
+
+    text = build_alarm_text([todo], "en")
+    text_line = text.split("\n")[1]
+
+    assert _display_width(text_line) <= 45
+    assert text_line.endswith("…")
+
+
+def test_build_alarm_text_truncates_long_multi_todo_line() -> None:
+    first = _todo("x" * 200, at="09:00")
+    second = _todo("y" * 200, at="09:00")
+
+    text = build_alarm_text([first, second], "en")
+
+    for line in text.split("\n"):
+        assert _display_width(line) <= 45
+        assert line.endswith("…")

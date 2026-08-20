@@ -57,13 +57,21 @@ def _resolve_use_emoji(character: Character, use_emoji: bool | None) -> bool:
     return True
 
 
+def todo_display_text(todo: Todo) -> str:
+    """Return sanitized todo text with its optional alarm time prefix."""
+    text = sanitize_text(todo.text)
+    if todo.at is None:
+        return text
+    return f"{todo.at} {text}"
+
+
 def _render_brief(todos: list[Todo], character_display: str, *, use_emoji: bool) -> str:
     count = len(todos)
     if count == 0:
         suffix = " 🎉" if use_emoji else ""
         return f"{character_display} No todos today{suffix}"
 
-    first_todo = sanitize_text(todos[0].text)
+    first_todo = todo_display_text(todos[0])
     label = "todo" if count == 1 else "todos"
     more = "" if count == 1 else f" (+{count - 1} more)"
     return f"{character_display} {count} {label}: {first_todo}{more}"
@@ -88,7 +96,7 @@ def _render_full(
 
 
 def _format_todo_line(todo: Todo) -> str:
-    text = sanitize_text(todo.text)
+    text = todo_display_text(todo)
     if todo.source == "builtin":
         todo_id = str(todo.id) if todo.id is not None else "?"
         return f"[#{todo_id}] {text}"

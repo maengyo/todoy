@@ -54,6 +54,18 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M8 (follow-up) — 2026-08-20
+
+### Decisions
+
+- **Time alarms (issue #13).** `Todo.at` (`"HH:MM"`, canonical zero-padded via `parse_at`) from `todoy add --at` or a leading time token in markdown lines (`- [ ] 14:00 회의`). The overlay's `AlarmClock` (pure, injectable clock) fires each timed todo once per day at its minute — showing ONLY that message (⏰ line, no taunt) — with a 10-minute bounded catch-up for missed minutes and snooze re-arming. Independent of the periodic interval reminder. Timed todos render with an `HH:MM ` prefix in list/TUI/overlay.
+- `OverlayBackend.run` gained a `get_todos` callable so the backend reads fresh todos every tick.
+
+### UI polish (same day)
+
+- Overlay bubble/flag restyled by the new ui-polish-expert agent: typographic hierarchy, accent Snooze pill + quiet Quit, drawn bubble tail and flag pennant+pole, system colors (dark/light), softer radius/shadow/padding.
+- Live verification surfaced and fixed two CLI gaps: argparse choices now come from the animations constants (gallop had been missing), and `todoy overlay --character` was added.
+
 ## M7 (follow-up) — 2026-08-20
 
 ### Decisions

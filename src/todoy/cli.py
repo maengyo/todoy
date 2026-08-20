@@ -22,8 +22,8 @@ from todoy.display import sanitize_text
 from todoy.display.characters import get_character
 from todoy.display.messages import resolve_language
 from todoy.display.overlay.animations import BUBBLE_EFFECTS, MESSAGE_STYLES, MOVEMENTS
-from todoy.display.tui import render_tui
-from todoy.models import Todo
+from todoy.display.tui import render_tui, todo_display_text
+from todoy.models import Todo, parse_at
 from todoy.sources.builtin import BuiltinSource
 
 CommandHandler = Callable[[argparse.Namespace, BuiltinSource], int]
@@ -35,6 +35,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("text")
+    add_parser.add_argument("--at")
     add_parser.set_defaults(handler=_add)
 
     done_parser = subparsers.add_parser("done")
@@ -76,7 +77,8 @@ def _todo_id(todo: Todo) -> int:
 
 
 def _add(args: argparse.Namespace, source: BuiltinSource) -> int:
-    todo = source.add(args.text)
+    at = parse_at(args.at) if args.at is not None else None
+    todo = source.add(args.text, at=at)
     print(f"Added #{_todo_id(todo)}: {sanitize_text(todo.text)}")
     return 0
 
@@ -119,9 +121,9 @@ def _list(args: argparse.Namespace, source: BuiltinSource) -> int:
 
     for todo in builtin_todos:
         marker = "[x] " if todo.done else ""
-        print(f"  {_todo_id(todo)}. {marker}{sanitize_text(todo.text)}")
+        print(f"  {_todo_id(todo)}. {marker}{todo_display_text(todo)}")
     for todo in non_builtin_todos:
-        print(f"  - {sanitize_text(todo.text)}")
+        print(f"  - {todo_display_text(todo)}")
     return 0
 
 
@@ -270,11 +272,14 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
         print(sanitize_text(str(exc)), file=sys.stderr)
         return 1
 
-    def get_reminder_text() -> str:
+    def get_todos() -> list[Todo]:
         builtin_todos, non_builtin_todos = _collect_todos(include_done=False, config=config)
-        return build_reminder_text([*builtin_todos, *non_builtin_todos], language)
+        return [*builtin_todos, *non_builtin_todos]
 
-    return backend.run(options, scheduler, get_reminder_text)
+    def get_reminder_text() -> str:
+        return build_reminder_text(get_todos(), language)
+
+    return backend.run(options, scheduler, get_reminder_text, get_todos)
 
 
 def _overlay_test_seconds() -> float | None:

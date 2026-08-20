@@ -9,6 +9,7 @@ from __future__ import annotations
 import random
 import time
 import unicodedata
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from todoy.display import sanitize_text
@@ -22,6 +23,15 @@ if TYPE_CHECKING:
 
 MAX_TODO_LINE_WIDTH = 45
 MAX_TODO_LINES = 5
+
+# Bounded catch-up: a timed alarm missed while the overlay wasn't running (or
+# was asleep) still fires once, but only if the app first sees it within this
+# window after its scheduled time; older misses are skipped silently.
+ALARM_CATCH_UP_WINDOW = timedelta(minutes=10)
+ALARM_EMOJI = "⏰"
+
+_AlarmIdentity = tuple[date, str, str]  # (fired-on date, "HH:MM", todo text)
+_SnoozeIdentity = tuple[str, str]  # ("HH:MM", todo text) -- date-independent, see AlarmClock
 
 
 class ReminderScheduler:
@@ -70,6 +80,164 @@ class ReminderScheduler:
 
     def _snooze_seconds(self) -> float:
         return self.snooze_minutes * 60
+
+
+class AlarmClock:
+    """Tracks which timed todos (`todo.at`) have fired today.
+
+    Pure and injectable (a `now` callable returning `datetime`), independent
+    of any timer/event-loop implementation. A backend calls `update(todos)`
+    each tick with the fresh todo list, then reads `due()` for the todos that
+    just became due -- each one marked fired for the rest of the day so it
+    is not returned again on a later tick.
+
+    "Fired today" identity is `(date, at, text)`: an alarm re-armed via
+    `snooze_last()`, or a todo edited/re-added with the same time and text
+    tomorrow, is a distinct identity and can fire again.
+
+    Bounded catch-up: a todo whose `at` has already passed still fires once
+    on the first tick that observes it, as long as that tick is within
+    `ALARM_CATCH_UP_WINDOW` of the scheduled time (covers the overlay having
+    been asleep/closed through the exact minute); older misses are skipped
+    silently and never fire -- and, once skipped, are remembered for the rest
+    of the day (`_skipped`) so a backward clock jump or DST fold can't walk
+    the same miss back inside the catch-up window and fire it after all.
+    Note: comparisons use naive local `datetime`s, so a DST fall-back (the
+    wall clock repeating an hour) is the one case `_skipped` can't fully rule
+    out an identity recurring within the "same" calendar day; not handled
+    further here since it is a rare, self-correcting-next-day edge case.
+
+    `due()` reflects only the current tick's newly-fired batch (empty most
+    ticks); `snooze_last()` instead re-arms the most recently *non-empty*
+    fired batch (`_last_fired`), which -- unlike `_due` -- survives the empty
+    `update()` calls in between, so pressing Snooze several ticks after an
+    alarm first showed still works.
+    """
+
+    def __init__(
+        self,
+        snooze_minutes: int,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.snooze_minutes = snooze_minutes
+        self._now = now if now is not None else datetime.now
+        self._today: date = self._now().date()
+        self._fired: set[_AlarmIdentity] = set()
+        self._skipped: set[_AlarmIdentity] = set()
+        # Keyed by (at, text) -- NOT date -- so a snooze spanning midnight
+        # (e.g. snoozed at 23:58 for 10 minutes) still matches and fires at
+        # 00:08 the next day; only `_fired`/`_skipped` are date-scoped and
+        # reset at rollover.
+        self._snoozed_until: dict[_SnoozeIdentity, datetime] = {}
+        self._due: list[Todo] = []
+        self._last_fired: list[Todo] = []
+
+    def due(self) -> list[Todo]:
+        """Todos that became due on the most recent `update()` call."""
+        return list(self._due)
+
+    def update(self, todos: list[Todo]) -> None:
+        """Recompute `due()` from the fresh `todos` list for "now".
+
+        Todos without `at` are ignored. A todo missing from `todos` (e.g.
+        completed or removed) simply cannot fire, whether or not it was due
+        before. Rolls the fired/skipped-today sets over at midnight; pending
+        snoozes are untouched by rollover (see class docstring).
+        """
+        now = self._now()
+        today = now.date()
+        if today != self._today:
+            self._today = today
+            self._fired.clear()
+            self._skipped.clear()
+
+        due: list[Todo] = []
+        for todo in todos:
+            at = todo.at
+            if not at:
+                continue
+            identity: _AlarmIdentity = (today, at, todo.text)
+            if identity in self._fired or identity in self._skipped:
+                continue
+
+            snooze_key: _SnoozeIdentity = (at, todo.text)
+            snooze_target = self._snoozed_until.get(snooze_key)
+            if snooze_target is not None:
+                if now >= snooze_target:
+                    due.append(todo)
+                    self._fired.add(identity)
+                    del self._snoozed_until[snooze_key]
+                continue
+
+            scheduled = _alarm_datetime(today, at)
+            if scheduled is None or now < scheduled:
+                continue
+            if now - scheduled > ALARM_CATCH_UP_WINDOW:
+                self._skipped.add(identity)  # missed by too long -- never fires today
+                continue
+
+            due.append(todo)
+            self._fired.add(identity)
+
+        self._due = due
+        if due:
+            self._last_fired = list(due)
+
+    def snooze_last(self) -> None:
+        """Re-arm the most recently fired alarm todos (`_last_fired`, which
+        survives empty `update()` ticks since they last fired -- see class
+        docstring) to fire again `snooze_minutes` from now, relative to the
+        injected clock so this is safe under a fake/monotonic-style `now`.
+        """
+        if not self._last_fired:
+            return
+        now = self._now()
+        today = now.date()
+        target = now + timedelta(minutes=self.snooze_minutes)
+        for todo in self._last_fired:
+            identity: _AlarmIdentity = (today, todo.at, todo.text)
+            self._fired.discard(identity)
+            self._snoozed_until[(todo.at, todo.text)] = target
+        self._last_fired = []
+        self._due = []
+
+
+def _alarm_datetime(day: date, at: str) -> datetime | None:
+    """`day` at time `at` ("HH:MM"), or None if `at` is not a valid time."""
+    try:
+        hour_str, minute_str = at.split(":", 1)
+        hour, minute = int(hour_str), int(minute_str)
+    except (ValueError, AttributeError):
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return datetime(day.year, day.month, day.day, hour, minute)
+
+
+def build_alarm_text(todos: list[Todo], language: Language) -> str:
+    """Assemble the alarm speech-bubble text for exactly the due `todos`.
+
+    No taunt line, no other (non-due) todos -- just the alarm(s). A single
+    due todo renders as an "⏰ HH:MM" headline line followed by its (sanitized,
+    width-truncated) text on its own line. Multiple simultaneous alarms each
+    render as one "⏰ HH:MM text" line (also sanitized/width-truncated).
+    """
+    del language  # reserved: alarm text has no localized copy today
+
+    if not todos:
+        return ""
+
+    if len(todos) == 1:
+        todo = todos[0]
+        text = _truncate(sanitize_text(todo.text), MAX_TODO_LINE_WIDTH)
+        return f"{ALARM_EMOJI} {todo.at}\n{text}"
+
+    return "\n".join(_format_alarm_line(todo) for todo in todos)
+
+
+def _format_alarm_line(todo: Todo) -> str:
+    line = f"{ALARM_EMOJI} {todo.at} {sanitize_text(todo.text)}"
+    return _truncate(line, MAX_TODO_LINE_WIDTH)
 
 
 def build_reminder_text(
