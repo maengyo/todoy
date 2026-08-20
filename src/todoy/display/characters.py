@@ -19,6 +19,7 @@ CHARACTERS: dict[str, Character] = {
     "dog": Character(name="dog", emoji="🐶", ascii_art="(u . u)"),
     "ghost": Character(name="ghost", emoji="👻", ascii_art="(o_o)"),
     "robot": Character(name="robot", emoji="🤖", ascii_art="[o_o]"),
+    "horse": Character(name="horse", emoji="🐎", ascii_art=">>=(oo)=>>"),
 }
 
 _DEFAULT_CHARACTER_NAME = "cat"

@@ -9,11 +9,16 @@ from todoy.display.overlay.animations import (
     BUBBLE_EFFECTS,
     DASH_BURST_SPEED_PX_PER_SEC,
     FLOAT_BOB_AMPLITUDE_PX,
+    GALLOP_CYCLE_SECONDS,
+    GALLOP_HOP_PEAK_HEIGHT_PX,
+    GALLOP_SPEED_PX_PER_SEC,
     HOP_PEAK_HEIGHT_PX,
+    MESSAGE_STYLES,
     MOVEMENTS,
     WALK_SPEED_PX_PER_SEC,
     CharacterMovement,
     validate_bubble_effect,
+    validate_message_style,
     validate_movement,
 )
 
@@ -25,11 +30,15 @@ MAX_Y_OFFSET = 40.0
 
 
 def test_movements_tuple_contents() -> None:
-    assert MOVEMENTS == ("walk", "hop", "float", "dash", "still")
+    assert MOVEMENTS == ("walk", "hop", "float", "dash", "gallop", "still")
 
 
 def test_bubble_effects_tuple_contents() -> None:
     assert BUBBLE_EFFECTS == ("pop", "fade", "slide", "shake", "none")
+
+
+def test_message_styles_tuple_contents() -> None:
+    assert MESSAGE_STYLES == ("bubble", "flag")
 
 
 # --- validate_movement / validate_bubble_effect -------------------------------
@@ -45,7 +54,7 @@ def test_validate_movement_rejects_unknown_name() -> None:
         validate_movement("teleport")
 
     assert str(exc_info.value) == (
-        "Unknown movement: teleport. Available: walk, hop, float, dash, still"
+        "Unknown movement: teleport. Available: walk, hop, float, dash, gallop, still"
     )
 
 
@@ -61,6 +70,18 @@ def test_validate_bubble_effect_rejects_unknown_name() -> None:
     assert str(exc_info.value) == (
         "Unknown bubble effect: explode. Available: pop, fade, slide, shake, none"
     )
+
+
+@pytest.mark.parametrize("name", MESSAGE_STYLES)
+def test_validate_message_style_accepts_known_names(name: str) -> None:
+    assert validate_message_style(name) == name
+
+
+def test_validate_message_style_rejects_unknown_name() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        validate_message_style("banner")
+
+    assert str(exc_info.value) == ("Unknown message style: banner. Available: bubble, flag")
 
 
 # --- CharacterMovement: determinism -------------------------------------------
@@ -97,6 +118,7 @@ def test_invariants_hold_across_many_steps(movement: str) -> None:
         "hop": WALK_SPEED_PX_PER_SEC,
         "float": WALK_SPEED_PX_PER_SEC,  # float patrols slower; walk speed is a safe upper bound
         "dash": DASH_BURST_SPEED_PX_PER_SEC,
+        "gallop": GALLOP_SPEED_PX_PER_SEC,
         "still": 0.0,
     }[movement]
 
@@ -209,6 +231,51 @@ def test_walk_bounces_at_both_edges() -> None:
 
     assert any(x <= 0.0 + 1e-6 for x in xs)
     assert any(x >= 10.0 - 1e-6 for x in xs)
+
+
+def test_gallop_is_noticeably_faster_than_walk() -> None:
+    # Compare distance covered in a short burst, well before either would
+    # reach the (very wide) travel-width edge and bounce.
+    walk = CharacterMovement("walk", travel_width=TRAVEL_WIDTH)
+    gallop = CharacterMovement("gallop", travel_width=TRAVEL_WIDTH)
+    dt = 0.05
+
+    walk_start_x, _ = walk.step(0.0)
+    gallop_start_x, _ = gallop.step(0.0)
+    for _ in range(20):
+        walk_x, _ = walk.step(dt)
+        gallop_x, _ = gallop.step(dt)
+
+    walk_distance = walk_x - walk_start_x
+    gallop_distance = gallop_x - gallop_start_x
+
+    assert gallop_distance == pytest.approx(walk_distance * 3.0, rel=0.05)
+
+
+def test_gallop_double_beat_cadence_peaks_stay_low() -> None:
+    m = CharacterMovement("gallop", travel_width=TRAVEL_WIDTH, rng=random.Random(4))
+    dt = 0.01
+    y_values = [m.step(dt)[1] for _ in range(1000)]  # 10 simulated seconds
+
+    assert max(y_values) > 5.0  # it does leave the ground
+    assert max(y_values) <= GALLOP_HOP_PEAK_HEIGHT_PX + 1e-6  # but stays low
+    assert GALLOP_HOP_PEAK_HEIGHT_PX <= 14.0  # contract bound
+    assert any(y == 0.0 for y in y_values)  # flat contact happens
+
+
+def test_gallop_has_two_beats_per_cycle() -> None:
+    # Sample one full gallop cycle densely and count distinct "hop" peaks
+    # (local maxima above a low threshold) -- should read as a double-beat.
+    m = CharacterMovement("gallop", travel_width=TRAVEL_WIDTH, rng=random.Random(9))
+    dt = 0.005
+    steps = round(GALLOP_CYCLE_SECONDS / dt)  # exactly one full cadence cycle
+    y_values = [m.step(dt)[1] for _ in range(steps)]
+
+    threshold = GALLOP_HOP_PEAK_HEIGHT_PX * 0.5
+    above = [y > threshold for y in y_values]
+    # count rising edges (False -> True transitions) as distinct beats
+    beats = sum(1 for prev, cur in zip(above, above[1:], strict=False) if cur and not prev)
+    assert beats == 2
 
 
 def _simulate(movement: str, *, seed: int, steps: int, dt: float) -> list[tuple[float, float]]:

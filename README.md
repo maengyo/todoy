@@ -115,11 +115,14 @@ edit your config yourself. Deliberate friction is the feature.
 
 - Replace the character with your own image: set `character_image` in
   `~/.config/todoy/config.toml` (or answer the `todoy init` prompt).
-- Pick how it moves and how the bubble appears:
-  `todoy overlay --movement hop --bubble-effect shake` — movements are
-  `walk` (default) / `hop` / `float` / `dash` / `still`, bubble effects are
-  `pop` (default) / `fade` / `slide` / `shake` / `none`; set them permanently
-  via `movement` / `bubble_effect` under `[display]` in the config.
+- Pick how it moves and how the message appears:
+  `todoy overlay --movement gallop --message-style flag --character horse`
+  makes a horse gallop across your screen carrying your todos on a flag.
+  Movements: `walk` (default) / `hop` / `float` / `dash` / `gallop` / `still`.
+  Message styles: `bubble` (default, stays put) / `flag` (rides along with the
+  character). Entrance effects: `--bubble-effect pop` (default) / `fade` /
+  `slide` / `shake` / `none`. Set them permanently via `movement` /
+  `message_style` / `bubble_effect` under `[display]` in the config.
 - `todoy overlay --once` prints the reminder text to stdout without any GUI
   (works on every OS — handy for scripts and previews).
 - Other platforms: the display layer is pluggable; overlay backends for

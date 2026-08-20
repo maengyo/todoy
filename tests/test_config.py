@@ -34,6 +34,7 @@ def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
     assert config.snooze_minutes == 5
     assert config.movement == "walk"
     assert config.bubble_effect == "pop"
+    assert config.message_style == "bubble"
 
 
 def test_config_path_todoy_config_file_wins(
@@ -99,6 +100,7 @@ def test_load_config_reads_display_schema_and_expands_image_path(
 character = "robot"
 character_image = "~/robot.png"
 snooze_minutes = 9
+message_style = "flag"
 """.lstrip(),
         encoding="utf-8",
     )
@@ -107,6 +109,7 @@ snooze_minutes = 9
         character="robot",
         character_image=fake_home / "robot.png",
         snooze_minutes=9,
+        message_style="flag",
     )
 
 
@@ -127,6 +130,7 @@ character = "robot"
     assert config.character == "robot"
     assert config.movement == "walk"
     assert config.bubble_effect == "pop"
+    assert config.message_style == "bubble"
 
 
 def test_load_config_treats_empty_display_image_as_none(tmp_path: Path) -> None:
@@ -192,6 +196,10 @@ movement = 123
 [display]
 bubble_effect = false
 """,
+        """
+[display]
+message_style = ["flag"]
+""",
     ],
 )
 def test_load_config_wraps_wrong_types_with_path(tmp_path: Path, body: str) -> None:
@@ -237,6 +245,7 @@ def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
         snooze_minutes=12,
         movement="dash",
         bubble_effect="shake",
+        message_style="flag",
     )
     path = tmp_path / "config.toml"
 
@@ -249,11 +258,12 @@ def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
     assert "snooze_minutes = 12" in text
     assert 'movement = "dash"' in text
     assert 'bubble_effect = "shake"' in text
+    assert 'message_style = "flag"' in text
     assert load_config(path) == config
 
 
 def test_save_config_round_trips_animation_display_settings(tmp_path: Path) -> None:
-    config = Config(movement="float", bubble_effect="slide")
+    config = Config(movement="float", bubble_effect="slide", message_style="flag")
     path = tmp_path / "config.toml"
 
     save_config(config, path)
@@ -262,6 +272,7 @@ def test_save_config_round_trips_animation_display_settings(tmp_path: Path) -> N
     assert "[display]" in text
     assert 'movement = "float"' in text
     assert 'bubble_effect = "slide"' in text
+    assert 'message_style = "flag"' in text
     assert load_config(path) == config
 
 
@@ -277,6 +288,7 @@ def test_save_config_omits_default_animation_keys_from_nondefault_display_table(
     assert 'character = "robot"' in text
     assert "movement" not in text
     assert "bubble_effect" not in text
+    assert "message_style" not in text
     assert load_config(path) == Config(character="robot")
 
 

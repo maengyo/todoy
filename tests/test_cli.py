@@ -61,6 +61,7 @@ class FakeOverlayOptions:
     test_seconds: float | None
     movement: str
     bubble_effect: str
+    message_style: str
 
 
 class FakeReminderScheduler:
@@ -98,6 +99,7 @@ def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
     animations = types.ModuleType("todoy.display.overlay.animations")
     movements = ("walk", "hop", "float", "dash", "still")
     bubble_effects = ("pop", "fade", "slide", "shake", "none")
+    message_styles = ("bubble", "flag")
 
     def validate_movement(name: str) -> str:
         if name not in movements:
@@ -113,10 +115,19 @@ def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
             raise ValueError(msg)
         return name
 
+    def validate_message_style(name: str) -> str:
+        if name not in message_styles:
+            available = ", ".join(message_styles)
+            msg = f"Unknown message style: {name}. Available: {available}"
+            raise ValueError(msg)
+        return name
+
     animations.MOVEMENTS = movements
     animations.BUBBLE_EFFECTS = bubble_effects
+    animations.MESSAGE_STYLES = message_styles
     animations.validate_movement = validate_movement
     animations.validate_bubble_effect = validate_bubble_effect
+    animations.validate_message_style = validate_message_style
     monkeypatch.setitem(sys.modules, "todoy.display.overlay.animations", animations)
 
 
@@ -324,6 +335,7 @@ def test_init_wizard_writes_custom_display_settings(
     text = config_file.read_text(encoding="utf-8")
     assert "movement" not in text
     assert "bubble_effect" not in text
+    assert "message_style" not in text
 
 
 def test_init_wizard_invalid_character_reprompts_once_then_defaults(
@@ -749,6 +761,7 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     assert state.options.test_seconds == 1.5
     assert state.options.movement == "walk"
     assert state.options.bubble_effect == "pop"
+    assert state.options.message_style == "bubble"
     assert state.scheduler is not None
     assert state.scheduler.interval_minutes == 7
     assert state.scheduler.snooze_minutes == 8
@@ -765,7 +778,7 @@ def test_overlay_gui_uses_animation_values_from_config(
     install_fake_display_modules(monkeypatch)
     install_fake_animation_module(monkeypatch)
     state = install_fake_overlay_modules(monkeypatch)
-    save_config(Config(movement="float", bubble_effect="fade"), config_file)
+    save_config(Config(movement="float", bubble_effect="fade", message_style="flag"), config_file)
 
     exit_code = main(["overlay"])
 
@@ -776,6 +789,7 @@ def test_overlay_gui_uses_animation_values_from_config(
     assert state.options is not None
     assert state.options.movement == "float"
     assert state.options.bubble_effect == "fade"
+    assert state.options.message_style == "flag"
 
 
 def test_overlay_flags_override_animation_values_from_config(
@@ -787,9 +801,11 @@ def test_overlay_flags_override_animation_values_from_config(
     install_fake_display_modules(monkeypatch)
     install_fake_animation_module(monkeypatch)
     state = install_fake_overlay_modules(monkeypatch)
-    save_config(Config(movement="float", bubble_effect="fade"), config_file)
+    save_config(Config(movement="float", bubble_effect="fade", message_style="flag"), config_file)
 
-    exit_code = main(["overlay", "--movement", "hop", "--bubble-effect", "shake"])
+    exit_code = main(
+        ["overlay", "--movement", "hop", "--bubble-effect", "shake", "--message-style", "bubble"]
+    )
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -798,6 +814,7 @@ def test_overlay_flags_override_animation_values_from_config(
     assert state.options is not None
     assert state.options.movement == "hop"
     assert state.options.bubble_effect == "shake"
+    assert state.options.message_style == "bubble"
 
 
 def test_overlay_rejects_invalid_cli_animation_choice(
@@ -814,6 +831,20 @@ def test_overlay_rejects_invalid_cli_animation_choice(
     assert not data_file.exists()
 
 
+def test_overlay_rejects_invalid_cli_message_style_choice(
+    data_file: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["overlay", "--message-style", "scroll"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "invalid choice: 'scroll'" in captured.err
+    assert "--message-style" in captured.err
+    assert not data_file.exists()
+
+
 @pytest.mark.parametrize(
     ("config_body", "expected_message"),
     [
@@ -824,6 +855,10 @@ def test_overlay_rejects_invalid_cli_animation_choice(
         (
             '[display]\nbubble_effect = "burst\\u001b]0;x\\u0007"\n',
             "Unknown bubble effect: burst]0;x. Available: pop, fade, slide, shake, none\n",
+        ),
+        (
+            '[display]\nmessage_style = "scroll\\u001b]0;x\\u0007"\n',
+            "Unknown message style: scroll]0;x. Available: bubble, flag\n",
         ),
     ],
 )
@@ -854,6 +889,15 @@ def test_overlay_rejects_invalid_config_animation_value_with_sanitized_stderr(
 animations_spec = find_spec("todoy.display.overlay.animations")
 
 
+def _real_message_style_validator_available() -> bool:
+    try:
+        from todoy.display.overlay import animations
+
+        return animations.validate_message_style is not None
+    except (AttributeError, ImportError):
+        return False
+
+
 @pytest.mark.skipif(animations_spec is None, reason="todoy.display.overlay.animations unavailable")
 def test_real_overlay_animation_validators_reject_bad_input() -> None:
     from todoy.display.overlay import animations
@@ -862,3 +906,14 @@ def test_real_overlay_animation_validators_reject_bad_input() -> None:
         animations.validate_movement("crawl")
     with pytest.raises(ValueError, match="^Unknown bubble effect: burst\\. Available:"):
         animations.validate_bubble_effect("burst")
+
+
+@pytest.mark.skipif(
+    not _real_message_style_validator_available(),
+    reason="todoy.display.overlay.animations.validate_message_style unavailable",
+)
+def test_real_overlay_message_style_validator_rejects_bad_input() -> None:
+    from todoy.display.overlay import animations
+
+    with pytest.raises(ValueError, match="^Unknown message style: scroll\\. Available:"):
+        animations.validate_message_style("scroll")

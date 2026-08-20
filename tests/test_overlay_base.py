@@ -74,6 +74,7 @@ def test_overlay_options_movement_and_bubble_effect_default() -> None:
 
     assert options.movement == "walk"
     assert options.bubble_effect == "pop"
+    assert options.message_style == "bubble"
 
 
 def test_overlay_options_movement_and_bubble_effect_overridable() -> None:
@@ -84,7 +85,9 @@ def test_overlay_options_movement_and_bubble_effect_overridable() -> None:
         test_seconds=5.0,
         movement="hop",
         bubble_effect="shake",
+        message_style="flag",
     )
 
     assert options.movement == "hop"
     assert options.bubble_effect == "shake"
+    assert options.message_style == "flag"

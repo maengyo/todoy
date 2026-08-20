@@ -52,6 +52,16 @@ BUBBLE_PADDING = 12.0
 BUBBLE_HEIGHT = BUBBLE_TEXT_HEIGHT + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING * 2
 BUBBLE_GAP_ABOVE_CHARACTER = 8.0
 
+# `flag` message style: same panel content as the bubble, plus a thin pole
+# drawn inside the view's left edge that visually connects down toward the
+# character. The window is taller than the bubble by the pole's height; the
+# panel itself occupies the top `BUBBLE_HEIGHT` px, the pole the bottom strip.
+FLAG_POLE_HEIGHT = 28.0
+FLAG_POLE_WIDTH = 4.0
+FLAG_POLE_INSET = 18.0
+FLAG_GAP_ABOVE_CHARACTER = 2.0
+FLAG_PANEL_CORNER_RADIUS = 12.0
+
 
 class MacOSOverlayBackend:
     """AppKit-based `OverlayBackend`: floating character + reminder bubble."""
@@ -99,7 +109,17 @@ class _OverlayController(AppKit.NSObject):
         self.bubble_text_field: AppKit.NSTextField | None = None
         self.hide_timer: AppKit.NSTimer | None = None
         self.shake_timer: AppKit.NSTimer | None = None
-        self._shake_base_origin: AppKit.NSPoint | None = None
+        # `_message_base_origin` is where the message window rests with no
+        # shake applied: for `flag`, refreshed every wander tick so it rides
+        # along with the character; for `bubble`, set once at show time and
+        # left alone (stays put until hidden), per the message-style contract.
+        self._message_base_origin: AppKit.NSPoint | None = None
+        # Current shake wiggle, added on top of `_message_base_origin` when
+        # painting the window -- 0.0 when no shake is in progress. Keeping
+        # this as an *offset* (rather than a stored absolute point to shake
+        # around and restore to) lets a `flag` shake continue riding along
+        # with a moving character instead of snapping back to a stale spot.
+        self._shake_offset_px = 0.0
         self._shake_step_index = 0
         self.wander_timer: AppKit.NSTimer | None = None
         self.reminder_timer: AppKit.NSTimer | None = None
@@ -213,8 +233,17 @@ class _OverlayController(AppKit.NSObject):
         new_y = screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN + y_offset
 
         window.setFrameOrigin_(Foundation.NSMakePoint(new_x, new_y))
-        if self.bubble_window is not None and self.bubble_window.isVisible():
-            self._position_bubble()
+
+        # Only `flag` rides along with the character every tick; `bubble`
+        # appears at show-time position and stays put until hidden, per the
+        # message-style contract.
+        if (
+            self.bubble_window is not None
+            and self.bubble_window.isVisible()
+            and self.options.message_style == "flag"
+        ):
+            self._refresh_message_base_origin()
+            self._apply_message_window_frame()
 
     # --- reminder scheduling -------------------------------------------------
 
@@ -269,13 +298,18 @@ class _OverlayController(AppKit.NSObject):
         assert self.bubble_text_field is not None
         self._cancel_bubble_shake()
         self.bubble_text_field.setStringValue_(text)
-        self._position_bubble()
+        self._refresh_message_base_origin()
+        self._apply_message_window_frame()
         self._apply_bubble_entrance_effect()
         self._reset_hide_timer()
 
     @objc.python_method
     def _build_bubble_window(self) -> None:
-        frame = Foundation.NSMakeRect(0, 0, BUBBLE_WIDTH, BUBBLE_HEIGHT)
+        is_flag = self.options.message_style == "flag"
+        pole_height = FLAG_POLE_HEIGHT if is_flag else 0.0
+        window_height = BUBBLE_HEIGHT + pole_height
+
+        frame = Foundation.NSMakeRect(0, 0, BUBBLE_WIDTH, window_height)
         window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame,
             AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
@@ -290,17 +324,28 @@ class _OverlayController(AppKit.NSObject):
             | AppKit.NSWindowCollectionBehaviorStationary
         )
 
-        content = AppKit.NSView.alloc().initWithFrame_(frame)
-        content.setWantsLayer_(True)
-        content.layer().setBackgroundColor_(
-            AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(0.97).CGColor()
-        )
-        content.layer().setCornerRadius_(12.0)
+        if is_flag:
+            content = _FlagView.alloc().initWithFrame_(frame)
+            content.pole_height = pole_height
+            content.pole_inset = FLAG_POLE_INSET
+            content.pole_width = FLAG_POLE_WIDTH
+        else:
+            content = AppKit.NSView.alloc().initWithFrame_(frame)
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(
+                AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(0.97).CGColor()
+            )
+            content.layer().setCornerRadius_(FLAG_PANEL_CORNER_RADIUS)
+
+        # Both styles share the same panel content (text + Snooze/Quit),
+        # just shifted up by `pole_height` (0 for the plain bubble) to make
+        # room for the flag's pole strip at the bottom of the view.
+        panel_bottom = pole_height
 
         text_field = AppKit.NSTextField.alloc().initWithFrame_(
             Foundation.NSMakeRect(
                 BUBBLE_PADDING,
-                BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING,
+                panel_bottom + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING,
                 BUBBLE_WIDTH - BUBBLE_PADDING * 2,
                 BUBBLE_TEXT_HEIGHT,
             )
@@ -317,13 +362,15 @@ class _OverlayController(AppKit.NSObject):
         snooze_label = f"Snooze {self.scheduler.snooze_minutes}m"
         snooze_button = _make_button(
             snooze_label,
-            Foundation.NSMakeRect(BUBBLE_PADDING, BUBBLE_PADDING, 130, 28),
+            Foundation.NSMakeRect(BUBBLE_PADDING, panel_bottom + BUBBLE_PADDING, 130, 28),
             self,
             "onSnoozeClicked:",
         )
         quit_button = _make_button(
             "Quit",
-            Foundation.NSMakeRect(BUBBLE_WIDTH - BUBBLE_PADDING - 80, BUBBLE_PADDING, 80, 28),
+            Foundation.NSMakeRect(
+                BUBBLE_WIDTH - BUBBLE_PADDING - 80, panel_bottom + BUBBLE_PADDING, 80, 28
+            ),
             self,
             "onQuitClicked:",
         )
@@ -336,20 +383,71 @@ class _OverlayController(AppKit.NSObject):
         self.bubble_text_field = text_field
 
     @objc.python_method
-    def _position_bubble(self) -> None:
+    def _compute_message_origin(self) -> AppKit.NSPoint | None:
+        """The message window's resting origin (no shake offset applied).
+
+        For `flag` this is clamped to the screen (contract: "the flag must
+        stay fully on screen"); `bubble` is left unclamped, matching its
+        pre-existing behavior.
+        """
         if self.char_window is None or self.bubble_window is None:
-            return
+            return None
         char_frame = self.char_window.frame()
-        x = char_frame.origin.x + char_frame.size.width / 2 - BUBBLE_WIDTH / 2
-        y = char_frame.origin.y + char_frame.size.height + BUBBLE_GAP_ABOVE_CHARACTER
-        self.bubble_window.setFrameOrigin_(Foundation.NSMakePoint(x, y))
+        window_width = self.bubble_window.frame().size.width
+        x = char_frame.origin.x + char_frame.size.width / 2 - window_width / 2
+
+        if self.options.message_style == "flag":
+            y = char_frame.origin.y + char_frame.size.height + FLAG_GAP_ABOVE_CHARACTER
+            x = self._clamp_x_to_screen(x, window_width)
+        else:
+            y = char_frame.origin.y + char_frame.size.height + BUBBLE_GAP_ABOVE_CHARACTER
+
+        return Foundation.NSMakePoint(x, y)
+
+    @objc.python_method
+    def _refresh_message_base_origin(self) -> None:
+        """Recompute and store `self._message_base_origin` from the
+        character's current position. Call at show-time (both styles) and,
+        for `flag` only, on every wander tick -- see `onWanderTick_`.
+        """
+        origin = self._compute_message_origin()
+        if origin is not None:
+            self._message_base_origin = origin
+
+    @objc.python_method
+    def _apply_message_window_frame(self) -> None:
+        """Paint `self.bubble_window` at `_message_base_origin` plus any
+        active shake offset, re-clamping to the screen for `flag` every
+        time -- so a shake near a screen edge can never push the flag off
+        screen, even mid-oscillation.
+        """
+        window = self.bubble_window
+        base = self._message_base_origin
+        if window is None or base is None:
+            return
+
+        x = base.x + self._shake_offset_px
+        if self.options.message_style == "flag":
+            x = self._clamp_x_to_screen(x, window.frame().size.width)
+
+        window.setFrameOrigin_(Foundation.NSMakePoint(x, base.y))
+
+    @objc.python_method
+    def _clamp_x_to_screen(self, x: float, width: float) -> float:
+        """Clamp `x` so a `width`-wide window stays fully within the screen."""
+        screen_frame = self._screen_frame()
+        min_x = screen_frame.origin.x
+        max_x = screen_frame.origin.x + screen_frame.size.width - width
+        if max_x < min_x:
+            return min_x
+        return min(max(x, min_x), max_x)
 
     @objc.python_method
     def _apply_bubble_entrance_effect(self) -> None:
         """Show `self.bubble_window` using `self.options.bubble_effect`.
 
-        `_position_bubble()` must already have set the window's *target*
-        frame before this runs. pop/fade/slide animate via
+        `_apply_message_window_frame()` must already have set the window's
+        *target* frame before this runs. pop/fade/slide animate via
         `NSAnimationContext` (<= `BUBBLE_EFFECT_DURATION_SECONDS`); shake
         appears instantly and then wiggles horizontally with chained
         one-shot `NSTimer`s; none appears instantly with no animation.
@@ -394,7 +492,7 @@ class _OverlayController(AppKit.NSObject):
             window.setAlphaValue_(1.0)
             window.setFrame_display_(target_frame, False)
             window.orderFrontRegardless()
-            self._start_bubble_shake(target_frame.origin)
+            self._start_bubble_shake()
             return
 
         # "none" (and any future unvalidated fallback): appear instantly.
@@ -403,27 +501,33 @@ class _OverlayController(AppKit.NSObject):
         window.orderFrontRegardless()
 
     @objc.python_method
-    def _start_bubble_shake(self, base_origin: AppKit.NSPoint) -> None:
-        self._shake_base_origin = base_origin
+    def _start_bubble_shake(self) -> None:
+        """Begin the shake wiggle around the *current* `_message_base_origin`.
+
+        Each step just sets `_shake_offset_px` and repaints via
+        `_apply_message_window_frame()`, which re-derives the base origin
+        (updated live every wander tick for `flag`) and re-clamps to the
+        screen -- so a `flag` shake tracks a moving/galloping character and
+        never wiggles the window off screen.
+        """
         self._shake_step_index = 0
+        self._shake_offset_px = 0.0
         self._fire_bubble_shake_step()
 
     @objc.python_method
     def _fire_bubble_shake_step(self) -> None:
-        window = self.bubble_window
-        base_origin = self._shake_base_origin
-        if window is None or base_origin is None:
+        if self.bubble_window is None or self._message_base_origin is None:
             return
 
         total_steps = BUBBLE_SHAKE_OSCILLATIONS * 2
         if self._shake_step_index >= total_steps:
-            window.setFrameOrigin_(base_origin)
-            self._shake_base_origin = None
+            self._shake_offset_px = 0.0
+            self._apply_message_window_frame()
             return
 
         direction = 1.0 if self._shake_step_index % 2 == 0 else -1.0
-        x = base_origin.x + direction * BUBBLE_SHAKE_AMPLITUDE_PX
-        window.setFrameOrigin_(Foundation.NSMakePoint(x, base_origin.y))
+        self._shake_offset_px = direction * BUBBLE_SHAKE_AMPLITUDE_PX
+        self._apply_message_window_frame()
         self._shake_step_index += 1
 
         self.shake_timer = (
@@ -440,7 +544,9 @@ class _OverlayController(AppKit.NSObject):
         if self.shake_timer is not None:
             self.shake_timer.invalidate()
             self.shake_timer = None
-        self._shake_base_origin = None
+        if self._shake_offset_px != 0.0:
+            self._shake_offset_px = 0.0
+            self._apply_message_window_frame()
 
     @objc.python_method
     def _reset_hide_timer(self) -> None:
@@ -509,6 +615,46 @@ def _make_button(
     button.setTarget_(target)
     button.setAction_(selector)
     return button
+
+
+class _FlagView(AppKit.NSView):
+    """Message-window content for the `flag` style.
+
+    Draws a rounded-rect panel (holding the reminder text + buttons, added
+    as subviews by the caller) occupying the top `bounds.height - pole_height`
+    of the view, plus a thin pole strip inside the view's left edge running
+    from the panel's bottom down to the view's bottom edge -- the visual
+    connection down toward the character the flag rides next to.
+    """
+
+    pole_height: float = 0.0
+    pole_inset: float = 0.0
+    pole_width: float = 0.0
+
+    def drawRect_(self, rect: AppKit.NSRect) -> None:
+        bounds = self.bounds()
+        fill_color = AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(0.97)
+        fill_color.setFill()
+
+        panel_rect = Foundation.NSMakeRect(
+            0.0,
+            self.pole_height,
+            bounds.size.width,
+            bounds.size.height - self.pole_height,
+        )
+        panel_path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            panel_rect, FLAG_PANEL_CORNER_RADIUS, FLAG_PANEL_CORNER_RADIUS
+        )
+        panel_path.fill()
+
+        if self.pole_height > 0.0:
+            pole_rect = Foundation.NSMakeRect(
+                self.pole_inset, 0.0, self.pole_width, self.pole_height
+            )
+            AppKit.NSBezierPath.bezierPathWithRect_(pole_rect).fill()
+
+    def isFlipped(self) -> bool:
+        return False
 
 
 class _CharacterView(AppKit.NSView):

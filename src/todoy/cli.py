@@ -28,6 +28,7 @@ from todoy.sources.builtin import BuiltinSource
 CommandHandler = Callable[[argparse.Namespace, BuiltinSource], int]
 MOVEMENT_CHOICES = ("walk", "hop", "float", "dash", "still")
 BUBBLE_EFFECT_CHOICES = ("pop", "fade", "slide", "shake", "none")
+MESSAGE_STYLE_CHOICES = ("bubble", "flag")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -62,6 +63,7 @@ def _build_parser() -> argparse.ArgumentParser:
     overlay_parser.add_argument("--once", action="store_true")
     overlay_parser.add_argument("--movement", choices=MOVEMENT_CHOICES)
     overlay_parser.add_argument("--bubble-effect", choices=BUBBLE_EFFECT_CHOICES)
+    overlay_parser.add_argument("--message-style", choices=MESSAGE_STYLE_CHOICES)
     overlay_parser.set_defaults(handler=_overlay)
 
     return parser
@@ -238,6 +240,9 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
     bubble_effect = animations_module.validate_bubble_effect(
         args.bubble_effect if args.bubble_effect is not None else config.bubble_effect
     )
+    message_style = animations_module.validate_message_style(
+        args.message_style if args.message_style is not None else config.message_style
+    )
 
     core_module = importlib.import_module("todoy.display.overlay.core")
     build_reminder_text = core_module.build_reminder_text
@@ -257,6 +262,7 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
         test_seconds=_overlay_test_seconds(),
         movement=movement,
         bubble_effect=bubble_effect,
+        message_style=message_style,
     )
 
     try:

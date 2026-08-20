@@ -54,6 +54,18 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M7 (follow-up) — 2026-08-20
+
+### Decisions
+
+- **Galloping horse with a message flag (issue #12).** Character `horse` (🐎) joined the catalog; movement `gallop` = ~3× walk speed with a rhythmic double-beat hop (≤14px). Message presentation became its own axis: `message_style = "bubble"` (default, appears at show time and stays put) vs `"flag"` (a pennant that rides along with the character, repositioned every tick while visible, clamped fully on screen). Entrance `bubble_effect`s apply to both styles.
+- Selection: `[display] message_style` + `todoy overlay --message-style {bubble,flag}`.
+
+### Modifications from cross-review
+
+- Shake effect re-clamps every oscillation (a flag near the screen edge could drift off-screen) and composes with the live ride-along origin (it could briefly snap away from a galloping character).
+- Bubble mode no longer repositions on wander ticks — show-time position only, per contract.
+
 ## M6 (follow-up) — 2026-08-20
 
 ### Decisions

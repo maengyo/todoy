@@ -17,8 +17,9 @@ from __future__ import annotations
 import math
 import random
 
-MOVEMENTS: tuple[str, ...] = ("walk", "hop", "float", "dash", "still")
+MOVEMENTS: tuple[str, ...] = ("walk", "hop", "float", "dash", "gallop", "still")
 BUBBLE_EFFECTS: tuple[str, ...] = ("pop", "fade", "slide", "shake", "none")
+MESSAGE_STYLES: tuple[str, ...] = ("bubble", "flag")
 
 # --- tunables (implementation detail; not part of the frozen contract) -------
 
@@ -37,6 +38,15 @@ DASH_BURST_SPEED_PX_PER_SEC = 220.0
 DASH_PAUSE_RANGE_SECONDS = (0.6, 1.6)
 DASH_BURST_RANGE_SECONDS = (0.15, 0.4)
 
+GALLOP_SPEED_PX_PER_SEC = WALK_SPEED_PX_PER_SEC * 3.0  # ~3x walk, per contract
+GALLOP_HOP_PEAK_HEIGHT_PX = 12.0  # <= 14px contract bound
+GALLOP_BEAT_DURATION_SECONDS = 0.09  # one short hop of the double-beat
+GALLOP_BEAT_GAP_SECONDS = 0.03  # brief flat contact between the two beats
+GALLOP_STRIDE_REST_SECONDS = 0.15  # longer flat contact after the double-beat
+GALLOP_CYCLE_SECONDS = (
+    GALLOP_BEAT_DURATION_SECONDS * 2 + GALLOP_BEAT_GAP_SECONDS + GALLOP_STRIDE_REST_SECONDS
+)
+
 MAX_Y_OFFSET_PX = 40.0
 
 
@@ -51,6 +61,13 @@ def validate_bubble_effect(name: str) -> str:
     """Return `name` unchanged if it is a known bubble effect, else raise ValueError."""
     if name not in BUBBLE_EFFECTS:
         raise ValueError(f"Unknown bubble effect: {name}. Available: {', '.join(BUBBLE_EFFECTS)}")
+    return name
+
+
+def validate_message_style(name: str) -> str:
+    """Return `name` unchanged if it is a known message style, else raise ValueError."""
+    if name not in MESSAGE_STYLES:
+        raise ValueError(f"Unknown message style: {name}. Available: {', '.join(MESSAGE_STYLES)}")
     return name
 
 
@@ -98,6 +115,7 @@ class CharacterMovement:
             "hop": self._step_hop,
             "float": self._step_float,
             "dash": self._step_dash,
+            "gallop": self._step_gallop,
             "still": self._step_still,
         }[self.movement]
 
@@ -176,3 +194,26 @@ class CharacterMovement:
 
     def _step_still(self, dt: float) -> tuple[float, float]:
         return (self.x, 0.0)
+
+    def _step_gallop(self, dt: float) -> tuple[float, float]:
+        self._patrol(dt, GALLOP_SPEED_PX_PER_SEC)
+        self._elapsed += dt
+        phase = self._elapsed % GALLOP_CYCLE_SECONDS
+
+        beat1_end = GALLOP_BEAT_DURATION_SECONDS
+        gap_end = beat1_end + GALLOP_BEAT_GAP_SECONDS
+        beat2_end = gap_end + GALLOP_BEAT_DURATION_SECONDS
+
+        if phase < beat1_end:
+            t = phase / GALLOP_BEAT_DURATION_SECONDS
+            y = GALLOP_HOP_PEAK_HEIGHT_PX * 4.0 * t * (1.0 - t)
+        elif phase < gap_end:
+            y = 0.0
+        elif phase < beat2_end:
+            t = (phase - gap_end) / GALLOP_BEAT_DURATION_SECONDS
+            y = GALLOP_HOP_PEAK_HEIGHT_PX * 4.0 * t * (1.0 - t)
+        else:
+            y = 0.0
+
+        y = min(GALLOP_HOP_PEAK_HEIGHT_PX, max(0.0, y))
+        return (self.x, y)

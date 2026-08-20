@@ -42,6 +42,14 @@ def test_get_character_known_name_returns_matching_character() -> None:
     assert get_character("dog") == CHARACTERS["dog"]
 
 
+def test_characters_include_horse() -> None:
+    assert "horse" in CHARACTERS
+
+
+def test_horse_has_expected_emoji() -> None:
+    assert CHARACTERS["horse"].emoji == "🐎"
+
+
 def test_get_character_returns_character_dataclass_instance() -> None:
     assert isinstance(get_character("cat"), Character)
 

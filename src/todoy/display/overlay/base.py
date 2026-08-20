@@ -35,6 +35,7 @@ class OverlayOptions:
     test_seconds: float | None  # auto-quit after N seconds; None = run forever
     movement: str = "walk"  # one of animations.MOVEMENTS
     bubble_effect: str = "pop"  # one of animations.BUBBLE_EFFECTS
+    message_style: str = "bubble"  # one of animations.MESSAGE_STYLES
 
 
 class OverlayBackend(Protocol):

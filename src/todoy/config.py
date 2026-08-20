@@ -16,6 +16,7 @@ DEFAULT_CHARACTER = "cat"
 DEFAULT_SNOOZE_MINUTES = 5
 DEFAULT_MOVEMENT = "walk"
 DEFAULT_BUBBLE_EFFECT = "pop"
+DEFAULT_MESSAGE_STYLE = "bubble"
 
 
 @dataclass
@@ -29,6 +30,7 @@ class Config:
     snooze_minutes: int = DEFAULT_SNOOZE_MINUTES
     movement: str = DEFAULT_MOVEMENT
     bubble_effect: str = DEFAULT_BUBBLE_EFFECT
+    message_style: str = DEFAULT_MESSAGE_STYLE
 
 
 def config_path() -> Path:
@@ -127,6 +129,10 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         display.get("bubble_effect", DEFAULT_BUBBLE_EFFECT),
         "display.bubble_effect",
     )
+    message_style = _string(
+        display.get("message_style", DEFAULT_MESSAGE_STYLE),
+        "display.message_style",
+    )
 
     return Config(
         enabled_sources=enabled_sources,
@@ -138,6 +144,7 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         snooze_minutes=snooze_minutes,
         movement=movement,
         bubble_effect=bubble_effect,
+        message_style=message_style,
     )
 
 
@@ -210,6 +217,8 @@ def _config_to_toml(config: Config) -> str:
             lines.append(f"movement = {_toml_string(config.movement)}")
         if config.bubble_effect != DEFAULT_BUBBLE_EFFECT:
             lines.append(f"bubble_effect = {_toml_string(config.bubble_effect)}")
+        if config.message_style != DEFAULT_MESSAGE_STYLE:
+            lines.append(f"message_style = {_toml_string(config.message_style)}")
 
     return "\n".join(lines) + "\n"
 
@@ -229,6 +238,7 @@ def _should_emit_display_table(config: Config) -> bool:
         or config.snooze_minutes != DEFAULT_SNOOZE_MINUTES
         or config.movement != DEFAULT_MOVEMENT
         or config.bubble_effect != DEFAULT_BUBBLE_EFFECT
+        or config.message_style != DEFAULT_MESSAGE_STYLE
     )
 
 
