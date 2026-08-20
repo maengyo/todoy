@@ -30,8 +30,12 @@ MAX_TODO_LINES = 5
 ALARM_CATCH_UP_WINDOW = timedelta(minutes=10)
 ALARM_EMOJI = "⏰"
 
-_AlarmIdentity = tuple[date, str, str]  # (fired-on date, "HH:MM", todo text)
-_SnoozeIdentity = tuple[str, str]  # ("HH:MM", todo text) -- date-independent, see AlarmClock
+_AlarmIdentity = tuple[
+    date, str, str, int | None, str
+]  # (fired-on date, "HH:MM", source, id, todo text)
+_SnoozeIdentity = tuple[
+    str, str, int | None, str
+]  # ("HH:MM", source, id, todo text) -- date-independent, see AlarmClock
 
 
 class ReminderScheduler:
@@ -91,9 +95,15 @@ class AlarmClock:
     just became due -- each one marked fired for the rest of the day so it
     is not returned again on a later tick.
 
-    "Fired today" identity is `(date, at, text)`: an alarm re-armed via
-    `snooze_last()`, or a todo edited/re-added with the same time and text
-    tomorrow, is a distinct identity and can fire again.
+    "Fired today" identity is `(date, at, source, id, text)` -- source and id
+    (not just at+text) are part of the key so two *distinct* todos that
+    happen to share the same time and text (e.g. two builtin todos with
+    different ids, or a builtin todo and a markdown todo with identical
+    text) don't collapse into a single fired-identity and silently swallow
+    one of them; `id` may be `None` for read-only (non-builtin) sources,
+    where `text` is what disambiguates within that source. An alarm
+    re-armed via `snooze_last()`, or a todo edited/re-added with the same
+    time and text tomorrow, is a distinct identity and can fire again.
 
     Bounded catch-up: a todo whose `at` has already passed still fires once
     on the first tick that observes it, as long as that tick is within
@@ -124,10 +134,10 @@ class AlarmClock:
         self._today: date = self._now().date()
         self._fired: set[_AlarmIdentity] = set()
         self._skipped: set[_AlarmIdentity] = set()
-        # Keyed by (at, text) -- NOT date -- so a snooze spanning midnight
-        # (e.g. snoozed at 23:58 for 10 minutes) still matches and fires at
-        # 00:08 the next day; only `_fired`/`_skipped` are date-scoped and
-        # reset at rollover.
+        # Keyed by (at, source, id, text) -- NOT date -- so a snooze spanning
+        # midnight (e.g. snoozed at 23:58 for 10 minutes) still matches and
+        # fires at 00:08 the next day; only `_fired`/`_skipped` are
+        # date-scoped and reset at rollover.
         self._snoozed_until: dict[_SnoozeIdentity, datetime] = {}
         self._due: list[Todo] = []
         self._last_fired: list[Todo] = []
@@ -156,11 +166,11 @@ class AlarmClock:
             at = todo.at
             if not at:
                 continue
-            identity: _AlarmIdentity = (today, at, todo.text)
+            identity: _AlarmIdentity = (today, at, todo.source, todo.id, todo.text)
             if identity in self._fired or identity in self._skipped:
                 continue
 
-            snooze_key: _SnoozeIdentity = (at, todo.text)
+            snooze_key: _SnoozeIdentity = (at, todo.source, todo.id, todo.text)
             snooze_target = self._snoozed_until.get(snooze_key)
             if snooze_target is not None:
                 if now >= snooze_target:
@@ -195,9 +205,9 @@ class AlarmClock:
         today = now.date()
         target = now + timedelta(minutes=self.snooze_minutes)
         for todo in self._last_fired:
-            identity: _AlarmIdentity = (today, todo.at, todo.text)
+            identity: _AlarmIdentity = (today, todo.at, todo.source, todo.id, todo.text)
             self._fired.discard(identity)
-            self._snoozed_until[(todo.at, todo.text)] = target
+            self._snoozed_until[(todo.at, todo.source, todo.id, todo.text)] = target
         self._last_fired = []
         self._due = []
 

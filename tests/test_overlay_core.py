@@ -505,6 +505,65 @@ def test_alarm_multiple_simultaneous_todos_all_fire() -> None:
     assert alarm.due() == [first, second]
 
 
+def test_alarm_identity_includes_id_so_same_text_and_at_dont_collapse() -> None:
+    # Regression: two DISTINCT builtin todos that happen to share the same
+    # text and at (different ids) used to share one (date, at, text)
+    # identity -- the first marked it fired and the second was silently
+    # filtered out, even though it's a different todo entirely.
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    first = _todo("회의", at="14:00", id=1, source="builtin")
+    second = _todo("회의", at="14:00", id=2, source="builtin")
+
+    alarm.update([first, second])
+
+    assert alarm.due() == [first, second]
+    text = build_alarm_text(alarm.due(), "en")
+    assert text.count("⏰ 14:00 회의") == 2
+
+
+def test_alarm_identity_includes_source_for_builtin_vs_markdown_duplicates() -> None:
+    # Same regression as above, but for a builtin todo and a read-only
+    # (markdown) todo with identical text+at -- id is None on the markdown
+    # side, so source is what disambiguates them.
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    builtin_todo = _todo("회의", at="14:00", id=1, source="builtin")
+    markdown_todo = _todo("회의", at="14:00", id=None, source="markdown")
+
+    alarm.update([builtin_todo, markdown_todo])
+
+    assert alarm.due() == [builtin_todo, markdown_todo]
+
+
+def test_alarm_snooze_last_re_arms_each_duplicate_todo_under_its_own_key() -> None:
+    # snooze_last() must re-arm BOTH distinct todos, not collapse them onto
+    # one shared snooze target either.
+    clock = FakeDateTimeClock(datetime(2026, 8, 20, 14, 0))
+    alarm = AlarmClock(snooze_minutes=5, now=clock)
+    first = _todo("회의", at="14:00", id=1, source="builtin")
+    second = _todo("회의", at="14:00", id=2, source="builtin")
+
+    alarm.update([first, second])
+    assert alarm.due() == [first, second]
+
+    alarm.snooze_last()
+    assert alarm.due() == []
+
+    clock.advance(minutes=4, seconds=59)
+    alarm.update([first, second])
+    assert alarm.due() == []  # still inside the snooze window
+
+    clock.advance(seconds=1)
+    alarm.update([first, second])
+    assert alarm.due() == [first, second]  # both refire together
+
+    # And both go back to not refiring again afterward.
+    clock.advance(seconds=1)
+    alarm.update([first, second])
+    assert alarm.due() == []
+
+
 def test_alarm_clock_defaults_to_wall_clock_now() -> None:
     alarm = AlarmClock(snooze_minutes=5)
 
