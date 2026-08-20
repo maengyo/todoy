@@ -35,6 +35,7 @@ def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
     assert config.movement == "walk"
     assert config.bubble_effect == "pop"
     assert config.message_style == "bubble"
+    assert config.daily_clear is False
 
 
 def test_config_path_todoy_config_file_wins(
@@ -71,6 +72,7 @@ def test_load_config_reads_schema_and_expands_markdown_folder(
         """
 [general]
 reminder_interval_minutes = 45
+daily_clear = true
 
 [sources]
 enabled = ["markdown", "builtin"]
@@ -87,6 +89,7 @@ pinned_notes = ["Todo.md", "nested/Work.md"]
         markdown_folder=fake_home / "notes",
         markdown_pinned=["Todo.md", "nested/Work.md"],
         reminder_interval_minutes=45,
+        daily_clear=True,
     )
 
 
@@ -160,6 +163,14 @@ def test_load_config_wraps_corrupt_toml_with_path(tmp_path: Path) -> None:
         """
 [general]
 reminder_interval_minutes = "x"
+""",
+        """
+[general]
+daily_clear = "yes"
+""",
+        """
+[general]
+daily_clear = 1
 """,
         """
 [sources]
@@ -274,6 +285,26 @@ def test_save_config_round_trips_animation_display_settings(tmp_path: Path) -> N
     assert 'bubble_effect = "slide"' in text
     assert 'message_style = "flag"' in text
     assert load_config(path) == config
+
+
+def test_save_config_round_trips_daily_clear_when_true(tmp_path: Path) -> None:
+    config = Config(daily_clear=True)
+    path = tmp_path / "config.toml"
+
+    save_config(config, path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "[general]" in text
+    assert "daily_clear = true" in text
+    assert load_config(path) == config
+
+
+def test_save_config_omits_default_daily_clear(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    save_config(Config(), path)
+
+    assert "daily_clear" not in path.read_text(encoding="utf-8")
 
 
 def test_save_config_omits_default_animation_keys_from_nondefault_display_table(

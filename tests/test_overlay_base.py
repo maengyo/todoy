@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from todoy.display.characters import Character
-from todoy.display.overlay.base import OverlayOptions, create_backend
+from todoy.display.overlay.base import OverlayOptions, PanelActions, create_backend
 
 
 def test_create_backend_raises_helpful_error_on_non_darwin(
@@ -93,6 +93,85 @@ def test_overlay_options_movement_and_bubble_effect_overridable() -> None:
     assert options.message_style == "flag"
 
 
+# --- PanelActions: pure, AppKit-free -----------------------------------------
+
+
+def _noop_panel_actions() -> PanelActions:
+    return PanelActions(
+        add=lambda text, at: None,
+        set_done=lambda todo_id: None,
+        delete=lambda todo_id: None,
+        set_pinned=lambda todo_id, pinned: None,
+    )
+
+
+def test_panel_actions_holds_the_four_callables_and_forwards_arguments() -> None:
+    calls: list[tuple[str, tuple]] = []
+
+    actions = PanelActions(
+        add=lambda text, at: calls.append(("add", (text, at))),
+        set_done=lambda todo_id: calls.append(("set_done", (todo_id,))),
+        delete=lambda todo_id: calls.append(("delete", (todo_id,))),
+        set_pinned=lambda todo_id, pinned: calls.append(("set_pinned", (todo_id, pinned))),
+    )
+
+    actions.add("buy milk", "09:30")
+    actions.set_done(1)
+    actions.delete(2)
+    actions.set_pinned(3, True)
+
+    assert calls == [
+        ("add", ("buy milk", "09:30")),
+        ("set_done", (1,)),
+        ("delete", (2,)),
+        ("set_pinned", (3, True)),
+    ]
+
+
+def test_panel_actions_callables_return_error_string_or_none() -> None:
+    actions = PanelActions(
+        add=lambda text, at: "invalid time" if at == "bad" else None,
+        set_done=lambda todo_id: "no such todo" if todo_id == 99 else None,
+        delete=lambda todo_id: None,
+        set_pinned=lambda todo_id, pinned: None,
+    )
+
+    assert actions.add("x", "bad") == "invalid time"
+    assert actions.add("x", "09:30") is None
+    assert actions.set_done(99) == "no such todo"
+    assert actions.set_done(1) is None
+
+
+def test_panel_actions_is_a_frozen_dataclass() -> None:
+    actions = _noop_panel_actions()
+
+    with pytest.raises(AttributeError):
+        actions.add = lambda text, at: None  # type: ignore[method-assign]
+
+
+def test_overlay_backend_protocol_run_accepts_actions_as_fifth_positional_argument() -> None:
+    """A fake backend conforming to the (structural) `OverlayBackend`
+    protocol must accept `actions: PanelActions` as its 5th parameter --
+    checked without importing AppKit, so this runs on any OS.
+    """
+
+    class FakeBackend:
+        def run(self, options, scheduler, get_reminder_text, get_todos, actions) -> int:
+            assert isinstance(actions, PanelActions)
+            return 0
+
+    options = OverlayOptions(
+        character=Character(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
+        character_image=None,
+        language="en",
+        test_seconds=0.0,
+    )
+
+    exit_code = FakeBackend().run(options, object(), lambda: "", lambda: [], _noop_panel_actions())
+
+    assert exit_code == 0
+
+
 # --- macOS backend: alarm vs. interval-reminder interleaving -----------------
 #
 # Everything else in this file stays import-safe on any OS (see
@@ -159,7 +238,9 @@ def test_backend_defers_interval_reminder_while_alarm_bubble_is_visible() -> Non
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
     controller = _OverlayController.alloc().init()
-    controller.configure(options, scheduler, get_reminder_text, get_todos, app)
+    controller.configure(
+        options, scheduler, get_reminder_text, get_todos, _noop_panel_actions(), app
+    )
     try:
         controller.start()
 

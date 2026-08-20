@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 
 from todoy.models import Todo, parse_at
@@ -30,19 +32,29 @@ class BuiltinSource(Source):
 
     name = "builtin"
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, today: Callable[[], date] = date.today) -> None:
         self.path = path if path is not None else _default_path()
+        self._today = today
 
     def get_todos(self) -> list[Todo]:
         """Return today's open (not done) todos."""
         return self.list_todos(include_done=False)
 
-    def add(self, text: str, at: str | None = None) -> Todo:
+    def add(self, text: str, at: str | None = None, pinned: bool = False) -> Todo:
         if at is not None:
             at = parse_at(at)
         todos = self._load()
         next_id = max((t.id for t in todos if t.id is not None), default=0) + 1
-        todo = Todo(text=text, done=False, id=next_id, source=self.name, at=at)
+        created = self._today().isoformat()
+        todo = Todo(
+            text=text,
+            done=False,
+            id=next_id,
+            source=self.name,
+            at=at,
+            pinned=pinned,
+            created=created,
+        )
         todos.append(todo)
         self._save(todos)
         return todo
@@ -52,12 +64,88 @@ class BuiltinSource(Source):
         for i, todo in enumerate(todos):
             if todo.id == todo_id:
                 updated = Todo(
-                    text=todo.text, done=True, id=todo.id, source=todo.source, at=todo.at
+                    text=todo.text,
+                    done=True,
+                    id=todo.id,
+                    source=todo.source,
+                    at=todo.at,
+                    pinned=todo.pinned,
+                    created=todo.created,
                 )
                 todos[i] = updated
                 self._save(todos)
                 return updated
         raise KeyError(f"No todo with id {todo_id}")
+
+    def set_pinned(self, todo_id: int, pinned: bool) -> Todo:
+        todos = self._load()
+        for i, todo in enumerate(todos):
+            if todo.id == todo_id:
+                updated = Todo(
+                    text=todo.text,
+                    done=todo.done,
+                    id=todo.id,
+                    source=todo.source,
+                    at=todo.at,
+                    pinned=pinned,
+                    created=todo.created,
+                )
+                todos[i] = updated
+                self._save(todos)
+                return updated
+        raise KeyError(f"No todo with id {todo_id}")
+
+    def delete(self, todo_id: int) -> Todo:
+        todos = self._load()
+        for i, todo in enumerate(todos):
+            if todo.id == todo_id:
+                removed = todos.pop(i)
+                self._save(todos)
+                return removed
+        raise KeyError(f"No todo with id {todo_id}")
+
+    def sweep(self, today: date) -> int:
+        """Remove stale, non-pinned todos and migrate legacy created=None rows.
+
+        A todo is removed (regardless of its done status) when its `created`
+        date is strictly before `today` and it is not pinned. Rows with
+        `created=None` (written before this field existed) are not removed;
+        instead they are stamped with `today` in place, since we have no way
+        to know their true age. Persists only if anything changed. Returns
+        the number of todos removed.
+        """
+        todos = self._load()
+        kept: list[Todo] = []
+        removed_count = 0
+        changed = False
+        today_str = today.isoformat()
+
+        for todo in todos:
+            if todo.created is None:
+                todo = Todo(
+                    text=todo.text,
+                    done=todo.done,
+                    id=todo.id,
+                    source=todo.source,
+                    at=todo.at,
+                    pinned=todo.pinned,
+                    created=today_str,
+                )
+                changed = True
+                kept.append(todo)
+                continue
+
+            created_date = date.fromisoformat(todo.created)
+            if created_date < today and not todo.pinned:
+                removed_count += 1
+                changed = True
+                continue
+
+            kept.append(todo)
+
+        if changed:
+            self._save(kept)
+        return removed_count
 
     def list_todos(self, include_done: bool = False) -> list[Todo]:
         todos = self._load()

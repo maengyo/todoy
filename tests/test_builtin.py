@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 import pytest
 
@@ -249,3 +250,203 @@ def test_done_preserves_at(tmp_path):
     todo = src.add("meeting", at="14:00")
     updated = src.done(todo.id)
     assert updated.at == "14:00"
+
+
+def test_add_stamps_created_with_injectable_today(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json", today=lambda: date(2026, 8, 20))
+    todo = src.add("buy milk")
+    assert todo.created == "2026-08-20"
+
+
+def test_add_uses_real_today_by_default(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json")
+    todo = src.add("buy milk")
+    assert todo.created == date.today().isoformat()
+
+
+def test_add_defaults_pinned_false(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json")
+    todo = src.add("buy milk")
+    assert todo.pinned is False
+
+
+def test_add_with_pinned_true(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json")
+    todo = src.add("buy milk", pinned=True)
+    assert todo.pinned is True
+
+
+def test_done_preserves_pinned_and_created(tmp_path):
+    src = BuiltinSource(path=tmp_path / "todos.json", today=lambda: date(2026, 8, 20))
+    todo = src.add("finish report", pinned=True)
+    updated = src.done(todo.id)
+    assert updated.pinned is True
+    assert updated.created == "2026-08-20"
+
+
+class TestSetPinned:
+    def test_sets_pinned_true(self, tmp_path):
+        src = BuiltinSource(path=tmp_path / "todos.json")
+        todo = src.add("task")
+        updated = src.set_pinned(todo.id, True)
+        assert updated.pinned is True
+        assert updated.id == todo.id
+
+    def test_sets_pinned_false(self, tmp_path):
+        src = BuiltinSource(path=tmp_path / "todos.json")
+        todo = src.add("task", pinned=True)
+        updated = src.set_pinned(todo.id, False)
+        assert updated.pinned is False
+
+    def test_persists(self, tmp_path):
+        path = tmp_path / "todos.json"
+        src = BuiltinSource(path=path)
+        todo = src.add("task")
+        src.set_pinned(todo.id, True)
+
+        src2 = BuiltinSource(path=path)
+        reloaded = src2.list_todos(include_done=True)
+        assert reloaded[0].pinned is True
+
+    def test_preserves_other_fields(self, tmp_path):
+        src = BuiltinSource(path=tmp_path / "todos.json", today=lambda: date(2026, 8, 20))
+        todo = src.add("meeting", at="14:00")
+        updated = src.set_pinned(todo.id, True)
+        assert updated.text == "meeting"
+        assert updated.at == "14:00"
+        assert updated.created == "2026-08-20"
+        assert updated.done is False
+
+    def test_unknown_id_raises_keyerror(self, tmp_path):
+        src = BuiltinSource(path=tmp_path / "todos.json")
+        with pytest.raises(KeyError):
+            src.set_pinned(999, True)
+
+
+class TestDelete:
+    def test_removes_and_returns_todo(self, tmp_path):
+        src = BuiltinSource(path=tmp_path / "todos.json")
+        t1 = src.add("keep")
+        t2 = src.add("remove me")
+        removed = src.delete(t2.id)
+        assert removed.id == t2.id
+        assert removed.text == "remove me"
+        remaining = src.list_todos(include_done=True)
+        assert [t.id for t in remaining] == [t1.id]
+
+    def test_persists(self, tmp_path):
+        path = tmp_path / "todos.json"
+        src = BuiltinSource(path=path)
+        todo = src.add("gone")
+        src.delete(todo.id)
+
+        src2 = BuiltinSource(path=path)
+        assert src2.list_todos(include_done=True) == []
+
+    def test_removes_done_todo_too(self, tmp_path):
+        src = BuiltinSource(path=tmp_path / "todos.json")
+        todo = src.add("finish")
+        src.done(todo.id)
+        removed = src.delete(todo.id)
+        assert removed.done is True
+
+    def test_unknown_id_raises_keyerror(self, tmp_path):
+        src = BuiltinSource(path=tmp_path / "todos.json")
+        with pytest.raises(KeyError):
+            src.delete(999)
+
+
+class TestSweep:
+    def _make_source(self, tmp_path, add_today):
+        return BuiltinSource(path=tmp_path / "todos.json", today=lambda: add_today)
+
+    def test_removes_old_non_pinned_done_todo(self, tmp_path):
+        src = self._make_source(tmp_path, date(2026, 8, 18))
+        todo = src.add("old done task")
+        src.done(todo.id)
+
+        removed = src.sweep(date(2026, 8, 20))
+        assert removed == 1
+        assert src.list_todos(include_done=True) == []
+
+    def test_removes_old_non_pinned_open_todo(self, tmp_path):
+        src = self._make_source(tmp_path, date(2026, 8, 18))
+        src.add("old open task")
+
+        removed = src.sweep(date(2026, 8, 20))
+        assert removed == 1
+        assert src.list_todos(include_done=True) == []
+
+    def test_keeps_pinned_old_todo(self, tmp_path):
+        src = self._make_source(tmp_path, date(2026, 8, 18))
+        todo = src.add("old pinned task", pinned=True)
+
+        removed = src.sweep(date(2026, 8, 20))
+        assert removed == 0
+        remaining = src.list_todos(include_done=True)
+        assert [t.id for t in remaining] == [todo.id]
+
+    def test_keeps_todo_created_today(self, tmp_path):
+        src = self._make_source(tmp_path, date(2026, 8, 20))
+        todo = src.add("today task")
+
+        removed = src.sweep(date(2026, 8, 20))
+        assert removed == 0
+        assert [t.id for t in src.list_todos(include_done=True)] == [todo.id]
+
+    def test_keeps_todo_created_in_future(self, tmp_path):
+        src = self._make_source(tmp_path, date(2026, 8, 21))
+        todo = src.add("future task")
+
+        removed = src.sweep(date(2026, 8, 20))
+        assert removed == 0
+        assert [t.id for t in src.list_todos(include_done=True)] == [todo.id]
+
+    def test_migrates_created_none_rows_instead_of_deleting(self, tmp_path):
+        path = tmp_path / "todos.json"
+        legacy_row = {
+            "id": 1,
+            "text": "legacy row",
+            "done": False,
+            "source": "builtin",
+            "at": None,
+        }  # no "created" key at all -> Todo.from_dict defaults created=None
+        path.write_text(json.dumps({"todos": [legacy_row]}), encoding="utf-8")
+        src = BuiltinSource(path=path)
+
+        removed = src.sweep(date(2026, 8, 20))
+        assert removed == 0
+        remaining = src.list_todos(include_done=True)
+        assert len(remaining) == 1
+        assert remaining[0].created == "2026-08-20"
+
+    def test_returns_total_removed_count(self, tmp_path):
+        src = self._make_source(tmp_path, date(2026, 8, 18))
+        src.add("old 1")
+        src.add("old 2")
+        pinned = src.add("old pinned", pinned=True)
+
+        removed = src.sweep(date(2026, 8, 20))
+        assert removed == 2
+        remaining = src.list_todos(include_done=True)
+        assert [t.id for t in remaining] == [pinned.id]
+
+    def test_persists_removal(self, tmp_path):
+        path = tmp_path / "todos.json"
+        src = BuiltinSource(path=path, today=lambda: date(2026, 8, 18))
+        src.add("old task")
+
+        src.sweep(date(2026, 8, 20))
+
+        src2 = BuiltinSource(path=path)
+        assert src2.list_todos(include_done=True) == []
+
+    def test_persists_migration(self, tmp_path):
+        path = tmp_path / "todos.json"
+        legacy_row = {"id": 1, "text": "legacy row", "done": False, "source": "builtin"}
+        path.write_text(json.dumps({"todos": [legacy_row]}), encoding="utf-8")
+        src = BuiltinSource(path=path)
+        src.sweep(date(2026, 8, 20))
+
+        src2 = BuiltinSource(path=path)
+        assert src2.list_todos(include_done=True)[0].created == "2026-08-20"

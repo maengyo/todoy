@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 # H?H:MM — hour 1-2 digits (unpadded on input, always output zero-padded),
 # minute exactly 2 digits. Range validation (0-23 / 0-59) happens after the
 # regex match since the regex alone can't enforce numeric ranges.
-_AT_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+# NOTE: [0-9] (not \d) — \d matches any Unicode decimal digit (e.g. full-width
+# "０-９"), which int() would also happily parse, silently accepting
+# non-ASCII-digit input as a valid time. [0-9] restricts this to ASCII only.
+_AT_RE = re.compile(r"^([0-9]{1,2}):([0-9]{2})$")
+
+# YYYY-MM-DD — every component zero-padded to a fixed width. Whether the
+# month/day combination names a real calendar date (leap years, 30 vs 31 day
+# months, etc.) is checked after the regex match by constructing a real
+# date() object. [0-9] (not \d) for the same ASCII-only reason as _AT_RE above.
+_DATE_RE = re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})$")
 
 
 def parse_at(value: str) -> str:
@@ -27,6 +37,22 @@ def parse_at(value: str) -> str:
     raise ValueError(f"invalid time {value!r}, expected 'HH:MM' (24h)")
 
 
+def parse_date(value: str) -> str:
+    """Validate a canonical "YYYY-MM-DD" date string.
+
+    Raises ValueError for anything that isn't an exact, zero-padded
+    'YYYY-MM-DD' string naming a real calendar date.
+    """
+    match = _DATE_RE.match(value)
+    if match:
+        year, month, day = (int(g) for g in match.groups())
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            pass
+    raise ValueError(f"invalid date {value!r}, expected 'YYYY-MM-DD'")
+
+
 @dataclass
 class Todo:
     """A single todo item, regardless of which source produced it."""
@@ -36,6 +62,8 @@ class Todo:
     id: int | None = None  # assigned by builtin storage; None for read-only sources
     source: str = "builtin"  # which source produced it
     at: str | None = None  # canonical zero-padded "HH:MM" alarm time, or None
+    pinned: bool = False  # pinned todos survive the daily sweep regardless of age
+    created: str | None = None  # canonical "YYYY-MM-DD"; None for read-only sources
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +72,8 @@ class Todo:
             "done": self.done,
             "source": self.source,
             "at": self.at,
+            "pinned": self.pinned,
+            "created": self.created,
         }
 
     @classmethod
@@ -83,4 +113,33 @@ class Todo:
                     f"Todo 'at' must be 'HH:MM' or null, got {type(at).__name__}: {at!r}"
                 ) from None
 
-        return cls(text=text, done=done, id=todo_id, source=source, at=at)
+        pinned = d.get("pinned", False)
+        if not isinstance(pinned, bool):
+            raise ValueError(
+                f"Todo 'pinned' must be a bool, got {type(pinned).__name__}: {pinned!r}"
+            )
+
+        created = d.get("created")
+        if created is not None:
+            if not isinstance(created, str):
+                raise ValueError(
+                    f"Todo 'created' must be 'YYYY-MM-DD' or null, "
+                    f"got {type(created).__name__}: {created!r}"
+                )
+            try:
+                created = parse_date(created)
+            except ValueError:
+                raise ValueError(
+                    f"Todo 'created' must be 'YYYY-MM-DD' or null, "
+                    f"got {type(created).__name__}: {created!r}"
+                ) from None
+
+        return cls(
+            text=text,
+            done=done,
+            id=todo_id,
+            source=source,
+            at=at,
+            pinned=pinned,
+            created=created,
+        )

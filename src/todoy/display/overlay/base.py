@@ -27,6 +27,22 @@ _INSTALL_HINT = (
 
 
 @dataclass(frozen=True)
+class PanelActions:
+    """Backend-agnostic callbacks the menu-bar quick-add panel invokes.
+
+    Every callable is guaranteed by its caller (the CLI wiring layer) never
+    to raise: it returns a sanitized, user-facing error string on failure,
+    or `None` on success. This lets any display backend call them directly
+    from a UI event handler without a try/except around every click.
+    """
+
+    add: Callable[[str, str | None], str | None]  # (text, at) -> error or None
+    set_done: Callable[[int], str | None]  # builtin todo id -> error or None
+    delete: Callable[[int], str | None]  # builtin todo id -> error or None
+    set_pinned: Callable[[int, bool], str | None]  # (id, pinned) -> error or None
+
+
+@dataclass(frozen=True)
 class OverlayOptions:
     """Immutable, backend-agnostic overlay launch options."""
 
@@ -48,6 +64,7 @@ class OverlayBackend(Protocol):
         scheduler: ReminderScheduler,
         get_reminder_text: Callable[[], str],
         get_todos: Callable[[], list[Todo]],
+        actions: PanelActions,
     ) -> int:
         """Run the overlay event loop until quit; return the process exit code.
 
@@ -55,6 +72,9 @@ class OverlayBackend(Protocol):
         the backend can drive a `core.AlarmClock` with a fresh todo list --
         kept separate from `get_reminder_text` because the alarm check needs
         the todo objects themselves (for `todo.at`), not pre-rendered text.
+
+        `actions` wires the menu-bar quick-add panel's add/done/delete/pin
+        controls to the underlying todo store; see `PanelActions`.
         """
         ...
 

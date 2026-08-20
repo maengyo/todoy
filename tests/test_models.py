@@ -1,6 +1,6 @@
 import pytest
 
-from todoy.models import Todo, parse_at
+from todoy.models import Todo, parse_at, parse_date
 
 
 def test_todo_defaults():
@@ -10,6 +10,8 @@ def test_todo_defaults():
     assert t.id is None
     assert t.source == "builtin"
     assert t.at is None
+    assert t.pinned is False
+    assert t.created is None
 
 
 def test_todo_to_dict():
@@ -20,6 +22,8 @@ def test_todo_to_dict():
         "done": True,
         "source": "builtin",
         "at": None,
+        "pinned": False,
+        "created": None,
     }
 
 
@@ -31,6 +35,21 @@ def test_todo_to_dict_includes_at():
         "done": False,
         "source": "builtin",
         "at": "14:00",
+        "pinned": False,
+        "created": None,
+    }
+
+
+def test_todo_to_dict_includes_pinned_and_created():
+    t = Todo(text="meeting", id=1, source="builtin", pinned=True, created="2026-08-20")
+    assert t.to_dict() == {
+        "id": 1,
+        "text": "meeting",
+        "done": False,
+        "source": "builtin",
+        "at": None,
+        "pinned": True,
+        "created": "2026-08-20",
     }
 
 
@@ -59,6 +78,16 @@ def test_todo_from_dict_defaults_missing_keys():
     assert t.id is None
     assert t.source == "builtin"
     assert t.at is None
+    assert t.pinned is False
+    assert t.created is None
+
+
+def test_todo_from_dict_back_compat_old_json_without_pinned_or_created():
+    # Simulates a todos.json row written before pinned/created existed.
+    d = {"id": 5, "text": "legacy row", "done": False, "source": "builtin", "at": None}
+    t = Todo.from_dict(d)
+    assert t.pinned is False
+    assert t.created is None
 
 
 def test_todo_from_dict_missing_text_raises_valueerror():
@@ -123,10 +152,68 @@ def test_todo_from_dict_rejects_non_string_at():
         Todo.from_dict({"text": "x", "at": 1400})
 
 
-@pytest.mark.parametrize("bad_at", ["24:00", "9:60", "9:5", "ㅁ:ㅁ", "not a time", ""])
+@pytest.mark.parametrize("bad_at", ["24:00", "9:60", "9:5", "ㅁ:ㅁ", "not a time", "", "９:３０"])
 def test_todo_from_dict_rejects_invalid_at_format(bad_at):
     with pytest.raises(ValueError, match="Todo 'at' must be 'HH:MM' or null"):
         Todo.from_dict({"text": "x", "at": bad_at})
+
+
+def test_todo_from_dict_missing_pinned_key_defaults_to_false():
+    t = Todo.from_dict({"text": "x", "id": 1, "done": False, "source": "builtin"})
+    assert t.pinned is False
+
+
+def test_todo_from_dict_accepts_pinned_true():
+    t = Todo.from_dict({"text": "x", "pinned": True})
+    assert t.pinned is True
+
+
+def test_todo_from_dict_rejects_non_bool_pinned():
+    with pytest.raises(ValueError, match="Todo 'pinned' must be a bool"):
+        Todo.from_dict({"text": "x", "pinned": "yes"})
+
+
+def test_todo_from_dict_missing_created_key_defaults_to_none():
+    t = Todo.from_dict({"text": "x", "id": 1, "done": False, "source": "builtin"})
+    assert t.created is None
+
+
+def test_todo_from_dict_accepts_none_created():
+    t = Todo.from_dict({"text": "x", "created": None})
+    assert t.created is None
+
+
+def test_todo_from_dict_accepts_valid_created():
+    t = Todo.from_dict({"text": "x", "created": "2026-08-20"})
+    assert t.created == "2026-08-20"
+
+
+def test_todo_from_dict_rejects_non_string_created():
+    with pytest.raises(ValueError, match="Todo 'created' must be 'YYYY-MM-DD' or null"):
+        Todo.from_dict({"text": "x", "created": 20260820})
+
+
+@pytest.mark.parametrize(
+    "bad_created",
+    [
+        "2026-8-20",
+        "2026/08/20",
+        "2026-13-01",
+        "2026-02-30",
+        "not a date",
+        "",
+        "2026-08-20T00:00",
+        "２０２６-０８-２０",
+    ],
+)
+def test_todo_from_dict_rejects_invalid_created_format(bad_created):
+    with pytest.raises(ValueError, match="Todo 'created' must be 'YYYY-MM-DD' or null"):
+        Todo.from_dict({"text": "x", "created": bad_created})
+
+
+def test_todo_roundtrip_with_pinned_and_created():
+    t = Todo(text="meeting", done=False, id=1, source="builtin", pinned=True, created="2026-08-20")
+    assert Todo.from_dict(t.to_dict()) == t
 
 
 class TestParseAt:
@@ -155,8 +242,40 @@ class TestParseAt:
             "9:30 ",  # trailing whitespace not stripped by caller
             " 9:30",  # leading whitespace not stripped by caller
             "",  # empty string
+            "９:３０",  # full-width Unicode digits — must not be accepted as ASCII digits
         ],
     )
     def test_rejects_invalid_values(self, value):
         with pytest.raises(ValueError):
             parse_at(value)
+
+
+class TestParseDate:
+    def test_accepts_canonical_date(self):
+        assert parse_date("2026-08-20") == "2026-08-20"
+
+    def test_accepts_leap_day(self):
+        assert parse_date("2024-02-29") == "2024-02-29"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "2026-8-20",  # month must be exactly 2 digits
+            "2026-08-2",  # day must be exactly 2 digits
+            "26-08-20",  # year must be exactly 4 digits
+            "2026/08/20",  # wrong separator
+            "2026-13-01",  # month out of range
+            "2026-00-01",  # month out of range (zero)
+            "2026-02-30",  # not a real day (Feb has 28/29 days)
+            "2025-02-29",  # not a leap year
+            "2026-08-20T00:00",  # trailing content
+            "not a date",
+            "",
+            " 2026-08-20",  # leading whitespace not stripped by caller
+            "2026-08-20 ",  # trailing whitespace not stripped by caller
+            "２０２６-０８-２０",  # full-width Unicode digits, not ASCII — must be rejected
+        ],
+    )
+    def test_rejects_invalid_values(self, value):
+        with pytest.raises(ValueError):
+            parse_date(value)

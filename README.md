@@ -57,6 +57,12 @@ $ todoy list --all
 Todos live in `~/.local/share/todoy/todos.json` (honors `XDG_DATA_HOME`;
 override the file entirely with the `TODOY_DATA_FILE` environment variable).
 
+More management: `todoy rm <id>` deletes, `todoy pin <id>` / `unpin <id>` pins
+(pinned todos show a 📌 and survive the daily sweep), `todoy add --pin` pins on
+creation. Set `daily_clear = true` under `[general]` in the config and every
+non-pinned todo from previous days is swept away on first use each morning —
+the list starts fresh daily, pinned tasks stay.
+
 ### Time alarms
 
 Give a todo a time and the overlay pops that message — and only that message —
@@ -143,6 +149,13 @@ edit your config yourself. Deliberate friction is the feature.
   (works on every OS — handy for scripts and previews).
 - Other platforms: the display layer is pluggable; overlay backends for
   Linux/Windows are welcome contributions.
+
+While the overlay runs, a **menu-bar item** (the character's emoji) opens a
+quick panel: type a todo (+ optional `HH:MM` for an alarm), hit return — done.
+The same panel lists today's todos with check (✓), delete (✕), and pin (📌)
+controls for todoy's own todos; note-sourced todos are shown read-only (todoy
+never edits your notes). The reminder bubble itself still only offers Snooze
+and Quit — managing your list is your job, on purpose.
 
 ## Roadmap
 

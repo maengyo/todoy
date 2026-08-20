@@ -7,7 +7,10 @@ import importlib
 import os
 import sys
 from collections.abc import Callable
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 from todoy.config import (
     DEFAULT_CHARACTER,
@@ -27,6 +30,7 @@ from todoy.models import Todo, parse_at
 from todoy.sources.builtin import BuiltinSource
 
 CommandHandler = Callable[[argparse.Namespace, BuiltinSource], int]
+PIN_SUFFIX = " 📌"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -36,11 +40,24 @@ def _build_parser() -> argparse.ArgumentParser:
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("text")
     add_parser.add_argument("--at")
+    add_parser.add_argument("--pin", action="store_true")
     add_parser.set_defaults(handler=_add)
 
     done_parser = subparsers.add_parser("done")
     done_parser.add_argument("todo_id", type=int, metavar="id")
     done_parser.set_defaults(handler=_done)
+
+    pin_parser = subparsers.add_parser("pin")
+    pin_parser.add_argument("todo_id", type=int, metavar="id")
+    pin_parser.set_defaults(handler=_pin)
+
+    unpin_parser = subparsers.add_parser("unpin")
+    unpin_parser.add_argument("todo_id", type=int, metavar="id")
+    unpin_parser.set_defaults(handler=_unpin)
+
+    rm_parser = subparsers.add_parser("rm")
+    rm_parser.add_argument("todo_id", type=int, metavar="id")
+    rm_parser.set_defaults(handler=_rm)
 
     list_parser = subparsers.add_parser("list")
     list_parser.add_argument("--all", action="store_true", dest="include_done")
@@ -76,21 +93,131 @@ def _todo_id(todo: Todo) -> int:
     return todo.id
 
 
+def _is_builtin_source(source: object) -> bool:
+    builtin_type = BuiltinSource
+    return (
+        isinstance(builtin_type, type)
+        and isinstance(source, builtin_type)
+        or getattr(source, "name", None) == "builtin"
+    )
+
+
+def _sweep_if_daily_clear(source: object, config: Config) -> None:
+    if not config.daily_clear:
+        return
+    source.sweep(date.today())
+
+
+def _source_add(source: object, text: str, *, at: str | None, pinned: bool) -> Todo:
+    return _expect_todo(source.add(text, at=at, pinned=pinned))
+
+
+def _source_done(source: object, todo_id: int) -> Todo:
+    return _expect_todo(source.done(todo_id))
+
+
+def _source_set_pinned(source: object, todo_id: int, pinned: bool) -> Todo:
+    return _expect_todo(source.set_pinned(todo_id, pinned))
+
+
+def _source_delete(source: object, todo_id: int) -> Todo:
+    return _expect_todo(source.delete(todo_id))
+
+
+def _expect_todo(value: object) -> Todo:
+    if not isinstance(value, Todo):
+        raise ValueError("Builtin source returned an invalid todo")
+    return value
+
+
+def _unknown_id(todo_id: int) -> None:
+    print(f"No todo with id {todo_id}", file=sys.stderr)
+
+
+def _action_error(exc: Exception) -> str:
+    if isinstance(exc, KeyError) and exc.args:
+        message = str(exc.args[0])
+    else:
+        message = str(exc)
+    if not message:
+        message = exc.__class__.__name__
+    return sanitize_text(message)
+
+
+def _todo_is_pinned(todo: Todo) -> bool:
+    return bool(todo.pinned)
+
+
+def _display_todo_text(todo: Todo) -> str:
+    text = todo_display_text(todo)
+    if _todo_is_pinned(todo) and not text.endswith(PIN_SUFFIX):
+        return f"{text}{PIN_SUFFIX}"
+    return text
+
+
+def _todo_for_tui(todo: Todo) -> Todo:
+    if not _todo_is_pinned(todo) or todo_display_text(todo).endswith(PIN_SUFFIX):
+        return todo
+    return replace(todo, text=f"{todo.text}{PIN_SUFFIX}")
+
+
+def _todos_for_tui(todos: list[Todo]) -> list[Todo]:
+    return [_todo_for_tui(todo) for todo in todos]
+
+
 def _add(args: argparse.Namespace, source: BuiltinSource) -> int:
+    config = load_config()
+    _sweep_if_daily_clear(source, config)
     at = parse_at(args.at) if args.at is not None else None
-    todo = source.add(args.text, at=at)
+    todo = _source_add(source, args.text, at=at, pinned=args.pin)
     print(f"Added #{_todo_id(todo)}: {sanitize_text(todo.text)}")
     return 0
 
 
 def _done(args: argparse.Namespace, source: BuiltinSource) -> int:
+    config = load_config()
+    _sweep_if_daily_clear(source, config)
     try:
-        todo = source.done(args.todo_id)
+        todo = _source_done(source, args.todo_id)
     except KeyError:
-        print(f"No todo with id {args.todo_id}", file=sys.stderr)
+        _unknown_id(args.todo_id)
         return 1
 
     print(f"Done #{_todo_id(todo)}: {sanitize_text(todo.text)}")
+    return 0
+
+
+def _pin(args: argparse.Namespace, source: BuiltinSource) -> int:
+    return _set_pinned(args.todo_id, True, "Pinned", source)
+
+
+def _unpin(args: argparse.Namespace, source: BuiltinSource) -> int:
+    return _set_pinned(args.todo_id, False, "Unpinned", source)
+
+
+def _set_pinned(todo_id: int, pinned: bool, label: str, source: BuiltinSource) -> int:
+    config = load_config()
+    _sweep_if_daily_clear(source, config)
+    try:
+        todo = _source_set_pinned(source, todo_id, pinned)
+    except KeyError:
+        _unknown_id(todo_id)
+        return 1
+
+    print(f"{label} #{_todo_id(todo)}: {sanitize_text(todo.text)}")
+    return 0
+
+
+def _rm(args: argparse.Namespace, source: BuiltinSource) -> int:
+    config = load_config()
+    _sweep_if_daily_clear(source, config)
+    try:
+        todo = _source_delete(source, args.todo_id)
+    except KeyError:
+        _unknown_id(args.todo_id)
+        return 1
+
+    print(f"Removed #{_todo_id(todo)}: {sanitize_text(todo.text)}")
     return 0
 
 
@@ -103,7 +230,8 @@ def _collect_todos(
     non_builtin_todos: list[Todo] = []
     source_config = config if config is not None else load_config()
     for configured_source in build_sources(source_config):
-        if isinstance(configured_source, BuiltinSource):
+        if _is_builtin_source(configured_source):
+            _sweep_if_daily_clear(configured_source, source_config)
             builtin_todos.extend(configured_source.list_todos(include_done=include_done))
         else:
             non_builtin_todos.extend(configured_source.get_todos())
@@ -121,9 +249,9 @@ def _list(args: argparse.Namespace, source: BuiltinSource) -> int:
 
     for todo in builtin_todos:
         marker = "[x] " if todo.done else ""
-        print(f"  {_todo_id(todo)}. {marker}{todo_display_text(todo)}")
+        print(f"  {_todo_id(todo)}. {marker}{_display_todo_text(todo)}")
     for todo in non_builtin_todos:
-        print(f"  - {todo_display_text(todo)}")
+        print(f"  - {_display_todo_text(todo)}")
     return 0
 
 
@@ -136,7 +264,7 @@ def _tui(args: argparse.Namespace, source: BuiltinSource) -> int:
     use_emoji = False if args.force_ascii else None
     print(
         render_tui(
-            [*builtin_todos, *non_builtin_todos],
+            _todos_for_tui([*builtin_todos, *non_builtin_todos]),
             character=character,
             language=language,
             brief=args.brief,
@@ -226,6 +354,54 @@ def _prompt_character_image_path() -> Path | None:
     return Path(raw_path).expanduser()
 
 
+def _fresh_swept_builtin_source(config: Config) -> object:
+    source = BuiltinSource()
+    _sweep_if_daily_clear(source, config)
+    return source
+
+
+def _build_panel_actions(base_module: Any, config: Config) -> object:
+    def add(text: str, at: str | None) -> str | None:
+        try:
+            parsed_at = parse_at(at) if at is not None else None
+            source = _fresh_swept_builtin_source(config)
+            _source_add(source, text, at=parsed_at, pinned=False)
+        except Exception as exc:
+            return _action_error(exc)
+        return None
+
+    def set_done(todo_id: int) -> str | None:
+        try:
+            source = _fresh_swept_builtin_source(config)
+            _source_done(source, todo_id)
+        except Exception as exc:
+            return _action_error(exc)
+        return None
+
+    def delete(todo_id: int) -> str | None:
+        try:
+            source = _fresh_swept_builtin_source(config)
+            _source_delete(source, todo_id)
+        except Exception as exc:
+            return _action_error(exc)
+        return None
+
+    def set_pinned(todo_id: int, pinned: bool) -> str | None:
+        try:
+            source = _fresh_swept_builtin_source(config)
+            _source_set_pinned(source, todo_id, pinned)
+        except Exception as exc:
+            return _action_error(exc)
+        return None
+
+    return base_module.PanelActions(
+        add=add,
+        set_done=set_done,
+        delete=delete,
+        set_pinned=set_pinned,
+    )
+
+
 def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
     del source
 
@@ -279,7 +455,8 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
     def get_reminder_text() -> str:
         return build_reminder_text(get_todos(), language)
 
-    return backend.run(options, scheduler, get_reminder_text, get_todos)
+    actions = _build_panel_actions(base_module, config)
+    return backend.run(options, scheduler, get_reminder_text, get_todos, actions)
 
 
 def _overlay_test_seconds() -> float | None:

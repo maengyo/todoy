@@ -46,6 +46,12 @@ class FakeInput:
         return answer
 
 
+def pinned_todo(text: str, *, todo_id: int = 1, at: str | None = None) -> Todo:
+    todo = Todo(text=text, id=todo_id, at=at)
+    todo.pinned = True
+    return todo
+
+
 @dataclass(frozen=True)
 class FakeCharacter:
     name: str
@@ -64,6 +70,14 @@ class FakeOverlayOptions:
     message_style: str
 
 
+@dataclass(frozen=True)
+class FakePanelActions:
+    add: Callable[[str, str | None], str | None]
+    set_done: Callable[[int], str | None]
+    delete: Callable[[int], str | None]
+    set_pinned: Callable[[int, bool], str | None]
+
+
 class FakeReminderScheduler:
     def __init__(self, interval_minutes: int, snooze_minutes: int) -> None:
         self.interval_minutes = interval_minutes
@@ -78,6 +92,7 @@ class FakeOverlayState:
     scheduler: FakeReminderScheduler | None = None
     reminder_text: str | None = None
     todos: list[Todo] | None = None
+    actions: FakePanelActions | None = None
 
 
 class FakeOverlayBackend:
@@ -90,11 +105,13 @@ class FakeOverlayBackend:
         scheduler: FakeReminderScheduler,
         get_reminder_text: Callable[[], str],
         get_todos: Callable[[], list[Todo]],
+        actions: FakePanelActions,
     ) -> int:
         self._state.options = options
         self._state.scheduler = scheduler
         self._state.reminder_text = get_reminder_text()
         self._state.todos = get_todos()
+        self._state.actions = actions
         return self._state.exit_code
 
 
@@ -201,6 +218,7 @@ def install_fake_overlay_modules(
         return FakeOverlayBackend(state)
 
     base.OverlayOptions = FakeOverlayOptions
+    base.PanelActions = FakePanelActions
     base.create_backend = create_backend
     monkeypatch.setitem(sys.modules, "todoy.display.overlay.base", base)
 
@@ -407,6 +425,35 @@ def test_add_at_invalid_input_prints_sanitized_stderr_and_exits_1(
     assert not data_file.exists()
 
 
+def test_add_pin_passes_pinned_true_and_prints_contract_message(
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    del config_file
+
+    class FakePinnedAddSource:
+        def __init__(self) -> None:
+            self.add_calls: list[tuple[str, str | None, bool]] = []
+
+        def add(self, text: str, at: str | None = None, pinned: bool = False) -> Todo:
+            self.add_calls.append((text, at, pinned))
+            todo = Todo(text=text, id=41, at=at)
+            todo.pinned = pinned
+            return todo
+
+    source = FakePinnedAddSource()
+    monkeypatch.setattr("todoy.cli.BuiltinSource", lambda: source)
+
+    exit_code = main(["add", "important", "--at", "9:05", "--pin"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "Added #41: important\n"
+    assert captured.err == ""
+    assert source.add_calls == [("important", "09:05", True)]
+
+
 def test_done_prints_contract_message(data_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
     main(["add", "finish report"])
     capsys.readouterr()
@@ -431,6 +478,179 @@ def test_done_unknown_id_prints_stderr_and_exits_1(
     assert captured.out == ""
     assert captured.err == "No todo with id 999\n"
     assert not data_file.exists()
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_output", "expected_call"),
+    [
+        (["pin", "7"], "Pinned #7: urgent\n", ("set_pinned", 7, True)),
+        (["unpin", "7"], "Unpinned #7: urgent\n", ("set_pinned", 7, False)),
+        (["rm", "7"], "Removed #7: urgent\n", ("delete", 7, None)),
+    ],
+)
+def test_manage_commands_print_contract_messages(
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected_output: str,
+    expected_call: tuple[str, int, bool | None],
+) -> None:
+    del config_file
+
+    class FakeManageSource:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, bool | None]] = []
+
+        def set_pinned(self, todo_id: int, pinned: bool) -> Todo:
+            self.calls.append(("set_pinned", todo_id, pinned))
+            return Todo(text="urgent", id=todo_id)
+
+        def delete(self, todo_id: int) -> Todo:
+            self.calls.append(("delete", todo_id, None))
+            return Todo(text="urgent", id=todo_id)
+
+    source = FakeManageSource()
+    monkeypatch.setattr("todoy.cli.BuiltinSource", lambda: source)
+
+    exit_code = main(argv)
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == expected_output
+    assert captured.err == ""
+    assert source.calls == [expected_call]
+
+
+@pytest.mark.parametrize("argv", [["pin", "999"], ["unpin", "999"], ["rm", "999"]])
+def test_manage_unknown_id_uses_existing_stderr_path(
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    del config_file
+
+    class FakeManageSource:
+        def set_pinned(self, todo_id: int, pinned: bool) -> Todo:
+            del pinned
+            raise KeyError(f"No todo with id {todo_id}")
+
+        def delete(self, todo_id: int) -> Todo:
+            raise KeyError(f"No todo with id {todo_id}")
+
+    monkeypatch.setattr("todoy.cli.BuiltinSource", FakeManageSource)
+
+    exit_code = main(argv)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "No todo with id 999\n"
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_after_sweep"),
+    [
+        (["add", "task"], "add"),
+        (["done", "1"], "done"),
+        (["pin", "1"], "set_pinned"),
+        (["unpin", "1"], "set_pinned"),
+        (["rm", "1"], "delete"),
+    ],
+)
+def test_daily_clear_sweeps_before_mutating_builtin_commands(
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected_after_sweep: str,
+) -> None:
+    save_config(Config(daily_clear=True), config_file)
+
+    class FakeSweepSource:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def sweep(self, today: object) -> int:
+            del today
+            self.calls.append("sweep")
+            return 0
+
+        def add(self, text: str, at: str | None = None, pinned: bool = False) -> Todo:
+            del at, pinned
+            self.calls.append("add")
+            return Todo(text=text, id=1)
+
+        def done(self, todo_id: int) -> Todo:
+            self.calls.append("done")
+            return Todo(text="task", id=todo_id, done=True)
+
+        def set_pinned(self, todo_id: int, pinned: bool) -> Todo:
+            del pinned
+            self.calls.append("set_pinned")
+            return Todo(text="task", id=todo_id)
+
+        def delete(self, todo_id: int) -> Todo:
+            self.calls.append("delete")
+            return Todo(text="task", id=todo_id)
+
+    source = FakeSweepSource()
+    monkeypatch.setattr("todoy.cli.BuiltinSource", lambda: source)
+
+    exit_code = main(argv)
+
+    capsys.readouterr()
+    assert exit_code == 0
+    assert source.calls[:2] == ["sweep", expected_after_sweep]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["list"],
+        ["tui", "--brief", "--ascii"],
+        ["overlay", "--once"],
+    ],
+)
+def test_daily_clear_sweeps_before_builtin_collection_commands(
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    import todoy.cli as cli
+
+    save_config(Config(daily_clear=True), config_file)
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    install_fake_overlay_modules(monkeypatch)
+
+    class FakeSweepBuiltinSource:
+        name = "builtin"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def sweep(self, today: object) -> int:
+            del today
+            self.calls.append("sweep")
+            return 0
+
+        def list_todos(self, include_done: bool = False) -> list[Todo]:
+            del include_done
+            self.calls.append("list_todos")
+            return []
+
+    source = FakeSweepBuiltinSource()
+    monkeypatch.setattr(cli, "BuiltinSource", FakeSweepBuiltinSource)
+    monkeypatch.setattr(cli, "build_sources", lambda config: [source])
+
+    exit_code = main(argv)
+
+    capsys.readouterr()
+    assert exit_code == 0
+    assert source.calls[:2] == ["sweep", "list_todos"]
 
 
 def test_list_empty_prints_contract_message(
@@ -489,6 +709,32 @@ def test_list_prefixes_timed_open_todos(
     assert captured.out == "  1. 14:00 회의\n  2. second\n"
     assert captured.err == ""
     assert data_file.exists()
+
+
+def test_list_appends_pin_suffix_after_text(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import todoy.cli as cli
+
+    def collect_todos(
+        *,
+        include_done: bool,
+        config: Config | None = None,
+    ) -> tuple[list[Todo], list[Todo]]:
+        del include_done, config
+        return [pinned_todo("urgent", todo_id=3, at="14:00")], []
+
+    monkeypatch.setattr(cli, "_collect_todos", collect_todos)
+
+    exit_code = main(["list"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "  3. 14:00 urgent 📌\n"
+    assert captured.err == ""
+    assert not data_file.exists()
 
 
 def test_list_all_marks_done_items(data_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -682,6 +928,34 @@ def test_tui_prints_aggregated_builtin_and_markdown_todos(
     assert data_file.exists()
 
 
+def test_tui_appends_pin_suffix_to_rendered_todos(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import todoy.cli as cli
+
+    install_fake_display_modules(monkeypatch)
+
+    def collect_todos(
+        *,
+        include_done: bool,
+        config: Config | None = None,
+    ) -> tuple[list[Todo], list[Todo]]:
+        del include_done, config
+        return [pinned_todo("urgent")], []
+
+    monkeypatch.setattr(cli, "_collect_todos", collect_todos)
+
+    exit_code = main(["tui", "--brief", "--ascii"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "(=^.^=) 1 todo: urgent 📌\n"
+    assert captured.err == ""
+    assert not data_file.exists()
+
+
 def test_tui_brief_ascii_flag_forces_ascii_character(
     data_file: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -861,6 +1135,102 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     assert state.todos is not None
     assert [todo.text for todo in state.todos] == ["builtin task"]
     assert data_file.exists()
+
+
+def test_overlay_gui_wires_panel_actions_with_sanitized_error_returns(
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import todoy.cli as cli
+
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    save_config(Config(daily_clear=True), config_file)
+    monkeypatch.setattr(cli, "_collect_todos", lambda *, include_done, config=None: ([], []))
+
+    class FakeActionSource:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object, object | None]] = []
+            sources.append(self)
+
+        def sweep(self, today: object) -> int:
+            self.calls.append(("sweep", today, None))
+            return 0
+
+        def add(self, text: str, at: str | None = None, pinned: bool = False) -> Todo:
+            self.calls.append(("add", text, at))
+            if text == "explode":
+                raise RuntimeError("bad add\x1b]0;x\x07")
+            todo = Todo(text=text, id=1, at=at)
+            todo.pinned = pinned
+            return todo
+
+        def done(self, todo_id: int) -> Todo:
+            self.calls.append(("done", todo_id, None))
+            if todo_id == 500:
+                raise RuntimeError("bad done\x1b]0;x\x07")
+            return Todo(text="done", id=todo_id, done=True)
+
+        def delete(self, todo_id: int) -> Todo:
+            self.calls.append(("delete", todo_id, None))
+            if todo_id == 500:
+                raise RuntimeError("bad delete\x1b]0;x\x07")
+            return Todo(text="deleted", id=todo_id)
+
+        def set_pinned(self, todo_id: int, pinned: bool) -> Todo:
+            self.calls.append(("set_pinned", todo_id, pinned))
+            if todo_id == 500:
+                raise RuntimeError("bad pin\x1b]0;x\x07")
+            return Todo(text="pinned", id=todo_id)
+
+    sources: list[FakeActionSource] = []
+    monkeypatch.setattr(cli, "BuiltinSource", FakeActionSource)
+
+    exit_code = main(["overlay"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert isinstance(state.actions, FakePanelActions)
+    actions = state.actions
+
+    initial_source_count = len(sources)
+    invalid_time_error = actions.add("panel task", "25:00\x1b]0;x\x07")
+    assert invalid_time_error is not None
+    assert "invalid time" in invalid_time_error
+    assert "\x1b" not in invalid_time_error
+    assert "\x07" not in invalid_time_error
+    assert len(sources) == initial_source_count
+
+    assert actions.add("panel task", "9:05") is None
+    assert sources[-1].calls[0][0] == "sweep"
+    assert sources[-1].calls[1] == ("add", "panel task", "09:05")
+
+    assert actions.set_done(5) is None
+    assert sources[-1].calls[0][0] == "sweep"
+    assert sources[-1].calls[1] == ("done", 5, None)
+
+    assert actions.delete(6) is None
+    assert sources[-1].calls[0][0] == "sweep"
+    assert sources[-1].calls[1] == ("delete", 6, None)
+
+    assert actions.set_pinned(7, True) is None
+    assert sources[-1].calls[0][0] == "sweep"
+    assert sources[-1].calls[1] == ("set_pinned", 7, True)
+
+    for error in (
+        actions.add("explode", None),
+        actions.set_done(500),
+        actions.delete(500),
+        actions.set_pinned(500, False),
+    ):
+        assert error is not None
+        assert "bad " in error
+        assert "\x1b" not in error
+        assert "\x07" not in error
 
 
 def test_overlay_gui_uses_animation_values_from_config(

@@ -17,6 +17,7 @@ DEFAULT_SNOOZE_MINUTES = 5
 DEFAULT_MOVEMENT = "walk"
 DEFAULT_BUBBLE_EFFECT = "pop"
 DEFAULT_MESSAGE_STYLE = "bubble"
+DEFAULT_DAILY_CLEAR = False
 
 
 @dataclass
@@ -31,6 +32,7 @@ class Config:
     movement: str = DEFAULT_MOVEMENT
     bubble_effect: str = DEFAULT_BUBBLE_EFFECT
     message_style: str = DEFAULT_MESSAGE_STYLE
+    daily_clear: bool = DEFAULT_DAILY_CLEAR
 
 
 def config_path() -> Path:
@@ -104,6 +106,9 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         reminder_interval_minutes, int
     ):
         raise ValueError("general.reminder_interval_minutes must be an int")
+    daily_clear = general.get("daily_clear", DEFAULT_DAILY_CLEAR)
+    if not isinstance(daily_clear, bool):
+        raise ValueError("general.daily_clear must be a bool")
 
     sources = _optional_table(data, "sources")
     enabled_sources = _string_list(sources.get("enabled", ["builtin"]), "sources.enabled")
@@ -145,6 +150,7 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         movement=movement,
         bubble_effect=bubble_effect,
         message_style=message_style,
+        daily_clear=daily_clear,
     )
 
 
@@ -187,10 +193,16 @@ def _config_to_toml(config: Config) -> str:
     lines = [
         "[general]",
         f"reminder_interval_minutes = {config.reminder_interval_minutes}",
-        "",
-        "[sources]",
-        f"enabled = {_toml_string_array(config.enabled_sources)}",
     ]
+    if config.daily_clear:
+        lines.append("daily_clear = true")
+    lines.extend(
+        [
+            "",
+            "[sources]",
+            f"enabled = {_toml_string_array(config.enabled_sources)}",
+        ]
+    )
 
     if _should_emit_markdown_table(config):
         lines.extend(

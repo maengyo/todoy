@@ -54,6 +54,16 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M9 (follow-up) — 2026-08-20
+
+### Decisions
+
+- **Menu-bar quick-add panel (issue #14).** While the overlay runs, an NSStatusItem opens a panel: quick-add (text + optional HH:MM, Return submits, inline sanitized errors) and today's list with ✓ done / ✕ delete / 📌 pin controls for builtin todos; note-sourced todos are read-only (todoy never writes user notes). The reminder bubble keeps only Snooze/Quit — management stays deliberate.
+- **Model.** `Todo.pinned` + `Todo.created` (YYYY-MM-DD, back-compat); `BuiltinSource.set_pinned/delete/sweep`.
+- **Daily clear.** `[general] daily_clear = false` by default (opt-in — silent data deletion must be chosen). When on, every builtin-touching command sweeps non-pinned todos created before today (done or not); rows without a created date are stamped with today (migration), never deleted.
+- **PanelActions.** The backend gets a frozen dataclass of never-raising callables (error-string-or-None) — GUI code stays decoupled from storage.
+- CLI: `todoy pin/unpin/rm <id>`, `add --pin`; pinned render with a trailing 📌.
+
 ## M8 (follow-up) — 2026-08-20
 
 ### Decisions
