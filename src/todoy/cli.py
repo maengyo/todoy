@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
+import shutil
 import sys
+import time
 from collections.abc import Callable
-from dataclasses import replace
-from datetime import date
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,8 @@ from todoy.sources.builtin import BuiltinSource
 
 CommandHandler = Callable[[argparse.Namespace, BuiltinSource], int]
 PIN_SUFFIX = " 📌"
+MIN_RUN_WIDTH_COLS = 20
+RUN_WIDTH_REFRESH_SECONDS = 1.0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -70,6 +74,14 @@ def _build_parser() -> argparse.ArgumentParser:
     tui_parser.add_argument("--ascii", action="store_true", dest="force_ascii")
     tui_parser.set_defaults(handler=_tui)
 
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--character")
+    run_parser.add_argument("--lang", choices=("en", "ko"))
+    run_parser.add_argument("--interval", type=int, metavar="MINUTES")
+    run_parser.add_argument("--ascii", action="store_true", dest="force_ascii")
+    run_parser.add_argument("--fps", type=_fps_arg, default=8, metavar="N")
+    run_parser.set_defaults(handler=_run)
+
     init_parser = subparsers.add_parser("init")
     init_parser.set_defaults(handler=_init)
 
@@ -84,6 +96,40 @@ def _build_parser() -> argparse.ArgumentParser:
     overlay_parser.set_defaults(handler=_overlay)
 
     return parser
+
+
+def _fps_arg(value: str) -> int:
+    try:
+        fps = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--fps must be an integer in the range 1..30") from exc
+    if not 1 <= fps <= 30:
+        raise argparse.ArgumentTypeError("--fps must be in the range 1..30")
+    return fps
+
+
+@dataclass
+class _RunLoopState:
+    character_name: str
+    emoji: str
+    language: str
+    interval_minutes: int
+    use_emoji: bool
+    terminal_run_module: Any
+    sprites_module: Any
+    core_module: Any
+    alarm_clock: Any
+    get_todos: Callable[[], list[Todo]]
+    now: Callable[[], datetime]
+    write: Callable[[str], None]
+    width_reader: Callable[[], int]
+    width_cols: int
+    runner: Any
+    frames: tuple[str, ...]
+    flag_text: str
+    next_interval_at: datetime
+    next_width_check_at: datetime
+    last_alarm_second: tuple[int, int, int, int, int, int] | None = None
 
 
 def _todo_id(todo: Todo) -> int:
@@ -272,6 +318,188 @@ def _tui(args: argparse.Namespace, source: BuiltinSource) -> int:
         )
     )
     return 0
+
+
+def _run(
+    args: argparse.Namespace,
+    source: BuiltinSource,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], datetime] = datetime.now,
+    write: Callable[[str], None] | None = None,
+    max_frames: int | None = None,
+    width_reader: Callable[[], int] | None = None,
+) -> int:
+    del source
+
+    config = load_config()
+    character = get_character(args.character)
+    language = resolve_language(args.lang)
+    interval_minutes = (
+        args.interval if args.interval is not None else config.reminder_interval_minutes
+    )
+    if interval_minutes <= 0:
+        raise ValueError("reminder interval must be a positive number of minutes")
+
+    terminal_run_module = importlib.import_module("todoy.display.terminal_run")
+    sprites_module = importlib.import_module("todoy.display.sprites")
+    core_module = importlib.import_module("todoy.display.overlay.core")
+    resolved_write = write if write is not None else _stdout_write
+    resolved_width_reader = width_reader if width_reader is not None else _terminal_width_columns
+    use_emoji = _resolve_run_use_emoji(character, force_ascii=args.force_ascii)
+
+    def get_todos() -> list[Todo]:
+        builtin_todos, non_builtin_todos = _collect_todos(include_done=False, config=config)
+        return [*builtin_todos, *non_builtin_todos]
+
+    current = now()
+    width_cols = _clamped_terminal_width(resolved_width_reader())
+    state = _RunLoopState(
+        character_name=character.name,
+        emoji=character.emoji,
+        language=language,
+        interval_minutes=interval_minutes,
+        use_emoji=use_emoji,
+        terminal_run_module=terminal_run_module,
+        sprites_module=sprites_module,
+        core_module=core_module,
+        alarm_clock=core_module.AlarmClock(config.snooze_minutes, now=now),
+        get_todos=get_todos,
+        now=now,
+        write=resolved_write,
+        width_reader=resolved_width_reader,
+        width_cols=width_cols,
+        runner=terminal_run_module.TerminalRun(width_cols, character.name),
+        frames=_run_frames(sprites_module, character.name, character.ascii_art),
+        flag_text=core_module.build_flag_line(get_todos(), language),
+        next_interval_at=current + timedelta(minutes=interval_minutes),
+        next_width_check_at=current + timedelta(seconds=RUN_WIDTH_REFRESH_SECONDS),
+    )
+
+    try:
+        return _run_terminal_loop(state, args.fps, sleep=sleep, max_frames=max_frames)
+    except KeyboardInterrupt:
+        _write_interrupt_newline(resolved_write)
+        return 0
+
+
+def _run_terminal_loop(
+    state: _RunLoopState,
+    fps: int,
+    *,
+    sleep: Callable[[float], None],
+    max_frames: int | None,
+) -> int:
+    frame_delay = 1.0 / fps
+    frames_written = 0
+    while max_frames is None or frames_written < max_frames:
+        _run_frame_step(state)
+        frames_written += 1
+        if max_frames is not None and frames_written >= max_frames:
+            break
+        sleep(frame_delay)
+    return 0
+
+
+def _run_frame_step(state: _RunLoopState) -> str:
+    current = state.now()
+    _refresh_run_width_if_due(state, current)
+
+    blocks: list[str] = []
+    alarm_block = _alarm_block_if_due(state, current)
+    if alarm_block:
+        blocks.append(alarm_block)
+    reminder_block = _reminder_block_if_due(state, current)
+    if reminder_block:
+        blocks.append(reminder_block)
+    if blocks:
+        state.write("\n" + "\n".join(block.rstrip("\n") for block in blocks) + "\n")
+
+    frame_index, x_col = state.runner.tick()
+    frame = state.frames[frame_index % len(state.frames)]
+    line = state.terminal_run_module.render_run_line(
+        x_col,
+        frame,
+        state.flag_text,
+        state.width_cols,
+        state.use_emoji,
+        state.emoji,
+    )
+    state.write("\r" + line)
+    return line
+
+
+def _refresh_run_width_if_due(state: _RunLoopState, current: datetime) -> None:
+    if current < state.next_width_check_at:
+        return
+    state.next_width_check_at = current + timedelta(seconds=RUN_WIDTH_REFRESH_SECONDS)
+    width_cols = _clamped_terminal_width(state.width_reader())
+    if width_cols == state.width_cols:
+        return
+    state.width_cols = width_cols
+    state.runner = state.terminal_run_module.TerminalRun(width_cols, state.character_name)
+
+
+def _alarm_block_if_due(state: _RunLoopState, current: datetime) -> str | None:
+    second = (
+        current.year,
+        current.month,
+        current.day,
+        current.hour,
+        current.minute,
+        current.second,
+    )
+    if second == state.last_alarm_second:
+        return None
+    state.last_alarm_second = second
+    todos = state.get_todos()
+    state.alarm_clock.update(todos)
+    due = state.alarm_clock.due()
+    if not due:
+        return None
+    return state.core_module.build_alarm_text(due, state.language)
+
+
+def _reminder_block_if_due(state: _RunLoopState, current: datetime) -> str | None:
+    if current < state.next_interval_at:
+        return None
+    state.next_interval_at = current + timedelta(minutes=state.interval_minutes)
+    todos = state.get_todos()
+    state.flag_text = state.core_module.build_flag_line(todos, state.language)
+    return state.core_module.build_reminder_text(todos, state.language)
+
+
+def _run_frames(sprites_module: Any, character_name: str, fallback: str) -> tuple[str, ...]:
+    frames = tuple(sprites_module.gait_frames(character_name))
+    if frames:
+        return frames
+    return (fallback,)
+
+
+def _resolve_run_use_emoji(character: Any, *, force_ascii: bool) -> bool:
+    use_emoji = False if force_ascii else None
+    tui_module = importlib.import_module("todoy.display.tui")
+    return bool(tui_module._resolve_use_emoji(character, use_emoji))
+
+
+def _terminal_width_columns() -> int:
+    return shutil.get_terminal_size().columns
+
+
+def _clamped_terminal_width(width_cols: int) -> int:
+    return max(MIN_RUN_WIDTH_COLS, width_cols)
+
+
+def _stdout_write(text: str) -> None:
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def _write_interrupt_newline(write: Callable[[str], None]) -> None:
+    try:
+        write("\n")
+    except KeyboardInterrupt:
+        pass
 
 
 def _init(args: argparse.Namespace, source: BuiltinSource) -> int:

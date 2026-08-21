@@ -17,6 +17,11 @@ app's real windows):
 
 ![todoy overlay: galloping horse with a message flag](demo/overlay-demo.gif)
 
+`todoy run` — the horse gallops through your terminal (works on Linux,
+Windows, and macOS; plain `\r` redraw, no ANSI):
+
+![todoy run: terminal gallop](demo/terminal-run.gif)
+
 The TUI, real output (default cat, and the snail in `--ascii` mode):
 
 ![todoy tui](demo/tui.png)
@@ -102,6 +107,19 @@ $ todoy list
   - prepare the meeting
   - call the bank
 ```
+
+### The character in your terminal, live (`todoy run`) — every OS
+
+```console
+$ todoy run --character horse
+```
+
+A long-running marquee: the character gallops left-to-right across one
+terminal line carrying the one-line flag message, legs animating through a
+real gait cycle with stride-locked movement (no sliding). Interval reminders
+and time alarms print as blocks above and the run resumes. Works in any
+terminal — Linux, Windows, macOS — with zero dependencies and no ANSI codes.
+`--fps`, `--lang`, `--ascii`, `--interval` as usual; Ctrl+C to stop.
 
 ### Meet the character (`todoy tui`)
 

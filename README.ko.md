@@ -16,6 +16,11 @@ M3(`todoy tui`), M4(`todoy overlay`, macOS), M5(릴리스 준비: CI, PyPI 배�
 
 ![todoy 오버레이: 깃발 든 질주하는 말](demo/overlay-demo.gif)
 
+`todoy run` — 터미널 안에서 말이 질주합니다 (Linux/Windows/macOS 어디서든;
+ANSI 없이 `\r` 재그리기만 사용):
+
+![todoy run: 터미널 갤럽](demo/terminal-run.gif)
+
 TUI 실제 출력 (기본 고양이, 그리고 `--ascii` 모드의 달팽이):
 
 ![todoy tui](demo/tui.png)
@@ -97,6 +102,19 @@ $ todoy list
   - 회의 준비
   - 은행 전화
 ```
+
+### 터미널 안에서 라이브로 (`todoy run`) — 모든 OS
+
+```console
+$ todoy run --character horse
+```
+
+상주형 마퀴 모드: 캐릭터가 터미널 한 줄을 왼쪽→오른쪽으로 질주하며 한 줄
+깃발 메시지를 끌고 갑니다. 다리는 실제 걸음 사이클로 움직이고 이동 거리는
+보폭에 잠겨 있어 미끄러지지 않습니다. 주기 리마인드와 시간 알람은 위에
+블록으로 출력된 뒤 질주가 이어집니다. Linux/Windows/macOS 어떤 터미널에서든
+의존성 0, ANSI 코드 0으로 동작합니다. `--fps`, `--lang`, `--ascii`,
+`--interval` 지원; Ctrl+C로 종료.
 
 ### 캐릭터 만나기 (`todoy tui`)
 

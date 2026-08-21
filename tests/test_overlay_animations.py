@@ -9,6 +9,7 @@ from todoy.display.overlay.animations import (
     BUBBLE_EFFECTS,
     DASH_BURST_SPEED_PX_PER_SEC,
     FLOAT_BOB_AMPLITUDE_PX,
+    GALLOP_AIRBORNE_SPEED_PX_PER_SEC,
     GALLOP_CYCLE_SECONDS,
     GALLOP_HOP_PEAK_HEIGHT_PX,
     GALLOP_SPEED_PX_PER_SEC,
@@ -118,7 +119,10 @@ def test_invariants_hold_across_many_steps(movement: str) -> None:
         "hop": WALK_SPEED_PX_PER_SEC,
         "float": WALK_SPEED_PX_PER_SEC,  # float patrols slower; walk speed is a safe upper bound
         "dash": DASH_BURST_SPEED_PX_PER_SEC,
-        "gallop": GALLOP_SPEED_PX_PER_SEC,
+        # gallop's stride-sync (Task 28) moves faster than the cycle average
+        # during the airborne beats, so the per-step continuity bound has to
+        # allow for that peak instantaneous speed, not the average.
+        "gallop": GALLOP_AIRBORNE_SPEED_PX_PER_SEC,
         "still": 0.0,
     }[movement]
 
@@ -234,15 +238,18 @@ def test_walk_bounces_at_both_edges() -> None:
 
 
 def test_gallop_is_noticeably_faster_than_walk() -> None:
-    # Compare distance covered in a short burst, well before either would
-    # reach the (very wide) travel-width edge and bounce.
-    walk = CharacterMovement("walk", travel_width=TRAVEL_WIDTH)
-    gallop = CharacterMovement("gallop", travel_width=TRAVEL_WIDTH)
-    dt = 0.05
+    # Compare distance covered over several full gallop cycles (a wide
+    # travel width means neither bounces off an edge). Stride-sync (Task 28)
+    # concentrates gallop's dx into the airborne beats, so a *short* window
+    # can land mid-cycle and skew the ratio; averaging across many cycles is
+    # what the "~3x walk" contract promise is actually about.
+    walk = CharacterMovement("walk", travel_width=TRAVEL_WIDTH * 10)
+    gallop = CharacterMovement("gallop", travel_width=TRAVEL_WIDTH * 10)
+    dt = 0.01
 
     walk_start_x, _ = walk.step(0.0)
     gallop_start_x, _ = gallop.step(0.0)
-    for _ in range(20):
+    for _ in range(2000):  # 20 simulated seconds, ~56 gallop cycles
         walk_x, _ = walk.step(dt)
         gallop_x, _ = gallop.step(dt)
 
@@ -276,6 +283,197 @@ def test_gallop_has_two_beats_per_cycle() -> None:
     # count rising edges (False -> True transitions) as distinct beats
     beats = sum(1 for prev, cur in zip(above, above[1:], strict=False) if cur and not prev)
     assert beats == 2
+
+
+# --- CharacterMovement: facing (M11 Task 28) ----------------------------------
+
+
+def test_still_facing_is_always_plus_one() -> None:
+    m = CharacterMovement("still", travel_width=TRAVEL_WIDTH)
+    assert m.facing == 1
+    for _ in range(50):
+        m.step(0.05)
+        assert m.facing == 1
+
+
+@pytest.mark.parametrize("movement", MOVEMENTS)
+def test_facing_starts_at_plus_one(movement: str) -> None:
+    m = CharacterMovement(movement, travel_width=TRAVEL_WIDTH, rng=random.Random(3))
+    assert m.facing == 1
+
+
+@pytest.mark.parametrize("movement", MOVEMENTS)
+def test_facing_is_always_plus_or_minus_one(movement: str) -> None:
+    m = CharacterMovement(movement, travel_width=TRAVEL_WIDTH, rng=random.Random(6))
+    for _ in range(500):
+        m.step(0.05)
+        assert m.facing in (1, -1)
+
+
+@pytest.mark.parametrize("movement", MOVEMENTS)
+def test_facing_matches_sign_of_horizontal_movement(movement: str) -> None:
+    # A narrow travel width forces frequent edge bounces, exercising the
+    # bounce case densely. `_patrol` flips `direction` (and so `facing`) the
+    # instant it clamps to a boundary -- i.e. *before* the next step's
+    # displacement happens in the new direction -- so the one tick that lands
+    # exactly on a boundary is exempted: its displacement was still made in
+    # the *old* direction, while `facing` (queried after `step()` returns)
+    # already reports the new one the character is about to turn to.
+    #
+    # `dt` is kept well below gallop's finest internal segment (the 0.03s
+    # gap) so a single `step(dt)` call can't itself straddle a bounce *and*
+    # the recovery leg on the other side (gallop's stride-sync integrates
+    # patrol piecewise across its beat/gap/rest segments, so a coarser dt
+    # could otherwise contain more than one direction change).
+    rng = random.Random(21)
+    m = CharacterMovement(movement, travel_width=30.0, rng=rng)
+    dt = 0.005
+    prev_x, _ = m.step(dt)
+    saw_positive = False
+    saw_negative = False
+    for _ in range(30_000):
+        x, _ = m.step(dt)
+        dx = x - prev_x
+        at_boundary = x <= 1e-6 or x >= 30.0 - 1e-6
+        if not at_boundary:
+            if dx > 1e-9:
+                assert m.facing == 1
+                saw_positive = True
+            elif dx < -1e-9:
+                assert m.facing == -1
+                saw_negative = True
+        prev_x = x
+
+    if movement != "still":
+        # sanity: the narrow travel width should have produced movement in
+        # both directions for every non-still preset (bounces guarantee it).
+        assert saw_positive or saw_negative
+
+
+def test_facing_flips_immediately_after_an_edge_bounce() -> None:
+    m = CharacterMovement("walk", travel_width=10.0, rng=random.Random(1))
+    assert m.facing == 1
+
+    x = m.step(0.0)[0]
+    for _ in range(200):
+        x, _ = m.step(0.05)
+        if x >= 10.0 - 1e-9:
+            break
+    assert x >= 10.0 - 1e-9
+    assert m.facing == -1  # about to head back left
+
+    for _ in range(200):
+        x, _ = m.step(0.05)
+        if x <= 0.0 + 1e-9:
+            break
+    assert x <= 0.0 + 1e-9
+    assert m.facing == 1  # about to head back right
+
+
+# --- CharacterMovement: gallop stride-sync (M11 Task 28) -----------------------
+
+
+def test_gallop_airborne_phase_carries_most_of_the_stride() -> None:
+    # >= 70% of each cycle's horizontal advance must happen while the
+    # character is airborne (y_offset > 0) -- otherwise it reads as sliding
+    # along the ground rather than striding. Sample several full cycles.
+    m = CharacterMovement("gallop", travel_width=TRAVEL_WIDTH)
+    dt = 0.005
+    steps_per_cycle = round(GALLOP_CYCLE_SECONDS / dt)
+    cycles = 8
+
+    airborne_dx = 0.0
+    ground_dx = 0.0
+    prev_x, prev_y = m.step(0.0)
+    for _ in range(steps_per_cycle * cycles):
+        x, y = m.step(dt)
+        dx = x - prev_x
+        # a step is "airborne" if either end of it has y_offset > 0
+        if y > 0.0 or prev_y > 0.0:
+            airborne_dx += dx
+        else:
+            ground_dx += dx
+        prev_x, prev_y = x, y
+
+    total_dx = airborne_dx + ground_dx
+    assert total_dx > 0.0
+    assert airborne_dx / total_dx >= 0.7
+
+
+def test_gallop_per_cycle_total_dx_matches_the_cycle_average_speed() -> None:
+    # Redistributing dx toward the airborne beats must not change the total
+    # ground covered per cycle -- the cycle AVERAGE speed (~3x walk, per
+    # contract) stays the same as before Task 28.
+    m = CharacterMovement("gallop", travel_width=TRAVEL_WIDTH * 10)
+    dt = 0.005
+    steps_per_cycle = round(GALLOP_CYCLE_SECONDS / dt)
+    cycles = 5
+
+    start_x, _ = m.step(0.0)
+    x = start_x
+    for _ in range(steps_per_cycle * cycles):
+        x, _ = m.step(dt)
+
+    total_dx = x - start_x
+    expected = GALLOP_SPEED_PX_PER_SEC * GALLOP_CYCLE_SECONDS * cycles
+    assert total_dx == pytest.approx(expected, rel=0.02)
+
+
+def _gallop_run(dt: float, total_time: float) -> tuple[float, float, float]:
+    """Simulate `gallop` for ~`total_time` seconds at a fixed `dt`. Returns
+    `(avg_speed, elapsed, airborne_fraction)` -- `elapsed` is `steps * dt`
+    (may differ slightly from `total_time` since `steps` is rounded), and
+    `airborne_fraction` is the share of dx covered while `y_offset > 0`
+    (either end of a step), per the contract's stride-sync bookkeeping.
+    Travel width is huge so the run never bounces off an edge, which would
+    make "net dx == avg speed * elapsed" invalid.
+    """
+    steps = round(total_time / dt)
+    m = CharacterMovement("gallop", travel_width=GALLOP_SPEED_PX_PER_SEC * total_time * 10.0)
+
+    airborne_dx = 0.0
+    ground_dx = 0.0
+    prev_x, prev_y = m.step(0.0)
+    for _ in range(steps):
+        x, y = m.step(dt)
+        dx = x - prev_x
+        if y > 0.0 or prev_y > 0.0:
+            airborne_dx += dx
+        else:
+            ground_dx += dx
+        prev_x, prev_y = x, y
+
+    total_dx = airborne_dx + ground_dx
+    elapsed = steps * dt
+    return total_dx / elapsed, elapsed, airborne_dx / total_dx
+
+
+@pytest.mark.parametrize("dt", [0.061, 0.067, 0.079, 0.083, 0.091])
+def test_gallop_stride_sync_holds_for_a_non_cycle_aligned_dt(dt: float) -> None:
+    # Regression (Codex review of Task 28): a naive "pick one speed for the
+    # whole dt, based on the phase at the end of it" implementation only
+    # integrates correctly when dt happens to land on a beat/gap/rest
+    # boundary -- every other gallop test in this file uses dt=0.005 or
+    # 0.01, which (not coincidentally) divide every one of
+    # GALLOP_CYCLE_SECONDS's internal boundaries evenly and so can't expose
+    # this bug. None of `dt`'s parametrized values divide the 0.09/0.03/
+    # 0.15s beat/gap/rest durations evenly, so (unlike e.g. 0.007 or 0.013,
+    # which happen to average out too cleanly against these particular
+    # timings to reliably catch the bug) every one of them lands mid-segment
+    # on most cycles and clearly separates a piecewise-correct
+    # implementation (observed drift here: well under 0.05%) from the
+    # single-speed-per-dt bug this guards against (observed drift: 0.07% to
+    # 0.6%, i.e. 5-10x this test's tolerance) -- see the reasoning captured
+    # in the M11 Task 28 report for the numbers behind this choice.
+    #
+    # `_step_gallop` integrates the patrol piecewise across boundaries
+    # instead, so per-cycle dx (and the airborne fraction) must come out the
+    # same as an aligned dt's, for ANY dt.
+    baseline_avg_speed, _, _ = _gallop_run(0.005, total_time=100.0)
+    avg_speed, _, airborne_fraction = _gallop_run(dt, total_time=100.0)
+
+    assert avg_speed == pytest.approx(baseline_avg_speed, rel=0.0005)
+    assert airborne_fraction >= 0.7
 
 
 def _simulate(movement: str, *, seed: int, steps: int, dt: float) -> list[tuple[float, float]]:

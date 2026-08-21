@@ -22,7 +22,7 @@ import Foundation
 import objc
 
 from todoy.display import sanitize_text
-from todoy.display.overlay.animations import CharacterMovement
+from todoy.display.overlay.animations import GALLOP_HOP_PEAK_HEIGHT_PX, CharacterMovement
 from todoy.display.overlay.core import (
     AlarmClock,
     build_alarm_flag_line,
@@ -54,6 +54,14 @@ CHARACTER_MAX_IMAGE_PX = 96.0
 CHARACTER_WINDOW_SIZE = 110.0
 EMOJI_FONT_SIZE = 64.0
 CHARACTER_BOTTOM_MARGIN = 24.0
+
+# Gallop-only squash-stretch (M11 Task 28): a subtle vertical scale synced to
+# the bounce phase (`y_offset`, 0..GALLOP_HOP_PEAK_HEIGHT_PX) -- stretched
+# tall near the top of each beat, squashed at ground contact. Applied on top
+# of the horizontal mirror flip in `_CharacterView.drawRect_`; every other
+# movement keeps `squash_scale` pinned at 1.0.
+GALLOP_SQUASH_SCALE_MIN = 0.95
+GALLOP_SQUASH_SCALE_MAX = 1.05
 
 BUBBLE_WIDTH = 320.0
 BUBBLE_TEXT_HEIGHT = 132.0
@@ -316,6 +324,7 @@ class _OverlayController(AppKit.NSObject):
 
         self.char_window = window
         self.char_view = content_view
+        self._apply_character_orientation(y_offset)
 
     @objc.python_method
     def _load_character_image(self) -> AppKit.NSImage | None:
@@ -338,6 +347,34 @@ class _OverlayController(AppKit.NSObject):
         image.setSize_(Foundation.NSMakeSize(w * scale, h * scale))
         return image
 
+    @objc.python_method
+    def _apply_character_orientation(self, y_offset: float) -> None:
+        """Mirror the character to face its travel direction and, for
+        `gallop` only, apply a subtle squash-stretch synced to the bounce
+        phase. Pure view-state -- doesn't touch the window frame, so it
+        can't disturb click regions, flag ride-along, or clamping."""
+        view = self.char_view
+        movement = self.movement
+        if view is None or movement is None:
+            return
+
+        if self.options.movement == "gallop":
+            ratio = 0.0
+            if GALLOP_HOP_PEAK_HEIGHT_PX > 0.0:
+                ratio = max(0.0, min(1.0, y_offset / GALLOP_HOP_PEAK_HEIGHT_PX))
+            squash_scale = (
+                GALLOP_SQUASH_SCALE_MIN
+                + (GALLOP_SQUASH_SCALE_MAX - GALLOP_SQUASH_SCALE_MIN) * ratio
+            )
+        else:
+            squash_scale = 1.0
+
+        if view.facing == movement.facing and view.squash_scale == squash_scale:
+            return
+        view.facing = movement.facing
+        view.squash_scale = squash_scale
+        view.setNeedsDisplay_(True)
+
     # --- wandering ---------------------------------------------------------
 
     def onWanderTick_(self, timer: AppKit.NSTimer) -> None:
@@ -351,6 +388,7 @@ class _OverlayController(AppKit.NSObject):
         new_y = screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN + y_offset
 
         window.setFrameOrigin_(Foundation.NSMakePoint(new_x, new_y))
+        self._apply_character_orientation(y_offset)
 
         # Only `flag` rides along with the character every tick; `bubble`
         # appears at show-time position and stays put until hidden, per the
@@ -1616,11 +1654,25 @@ class _FlagPanelView(AppKit.NSView):
 
 
 class _CharacterView(AppKit.NSView):
-    """Draws the character (user image or large emoji) and handles clicks."""
+    """Draws the character (user image or large emoji) and handles clicks.
+
+    `facing`/`squash_scale` (set by `_OverlayController._apply_character_
+    orientation`, driven by `CharacterMovement.facing`/gallop's `y_offset`)
+    are purely cosmetic -- they only affect what `drawRect_` paints, applied
+    as a graphics-state transform saved/restored around the draw calls. They
+    never touch the view's frame/bounds, so hit-testing (`mouseDown_`, and
+    AppKit's own click routing) is completely unaffected.
+    """
 
     controller: _OverlayController
     emoji: str = ""
     _image: AppKit.NSImage | None = None
+    # +1 (moving right) draws mirrored, -1 (left) draws normal -- Apple's
+    # animal/vehicle emoji all face left, per contract section 4.
+    facing: int = 1
+    # Gallop-only squash-stretch, synced to bounce phase; 1.0 (no-op) for
+    # every other movement -- see GALLOP_SQUASH_SCALE_MIN/MAX above.
+    squash_scale: float = 1.0
 
     @objc.python_method
     def set_image(self, image: AppKit.NSImage | None) -> None:
@@ -1628,6 +1680,22 @@ class _CharacterView(AppKit.NSView):
 
     def drawRect_(self, rect: AppKit.NSRect) -> None:
         bounds = self.bounds()
+        context = AppKit.NSGraphicsContext.currentContext()
+        context.saveGraphicsState()
+        try:
+            center_x = bounds.size.width / 2.0
+            center_y = bounds.size.height / 2.0
+            transform = AppKit.NSAffineTransform.transform()
+            transform.translateXBy_yBy_(center_x, center_y)
+            transform.scaleXBy_yBy_(-1.0 if self.facing >= 0 else 1.0, self.squash_scale)
+            transform.translateXBy_yBy_(-center_x, -center_y)
+            transform.concat()
+            self._draw_content(bounds)
+        finally:
+            context.restoreGraphicsState()
+
+    @objc.python_method
+    def _draw_content(self, bounds: AppKit.NSRect) -> None:
         if self._image is not None:
             size = self._image.size()
             origin = Foundation.NSMakePoint(

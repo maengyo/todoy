@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
 import random
+import signal
+import subprocess
 import sys
+import time
 import types
+from argparse import Namespace
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -223,6 +229,174 @@ def install_fake_overlay_modules(
     monkeypatch.setitem(sys.modules, "todoy.display.overlay.base", base)
 
     return state
+
+
+@dataclass
+class FakeRunModulesState:
+    terminal_inits: list[tuple[int, str]]
+    render_calls: list[dict[str, object]]
+    stride_calls: list[str]
+
+
+@dataclass
+class FakeRunCoreState:
+    flag_inputs: list[tuple[list[str], str]]
+    reminder_inputs: list[tuple[list[str], str]]
+    alarm_inputs: list[tuple[list[str], str]]
+    alarm_updates: list[list[str]]
+    alarm_clock_inits: list[tuple[int, Callable[[], datetime] | None]]
+
+
+class FakeRunClock:
+    def __init__(
+        self,
+        current: datetime | None = None,
+        *,
+        advance_per_sleep: timedelta | None = None,
+    ) -> None:
+        self.current = current if current is not None else datetime(2026, 8, 21, 9, 0, 0)
+        self.advance_per_sleep = advance_per_sleep
+        self.sleep_seconds: list[float] = []
+
+    def now(self) -> datetime:
+        return self.current
+
+    def sleep(self, seconds: float) -> None:
+        self.sleep_seconds.append(seconds)
+        if self.advance_per_sleep is None:
+            self.current += timedelta(seconds=seconds)
+        else:
+            self.current += self.advance_per_sleep
+
+
+def install_fake_run_modules(monkeypatch: pytest.MonkeyPatch) -> FakeRunModulesState:
+    state = FakeRunModulesState(terminal_inits=[], render_calls=[], stride_calls=[])
+    frames_by_name = {
+        "cat": ("cat-a", "cat-b"),
+        "robot": ("robot-a", "robot-b", "robot-c"),
+    }
+
+    sprites = types.ModuleType("todoy.display.sprites")
+
+    def gait_frames(name: str) -> tuple[str, ...]:
+        return frames_by_name.get(name, (f"{name}-a", f"{name}-b"))
+
+    def stride_columns(name: str) -> int:
+        state.stride_calls.append(name)
+        return 2
+
+    sprites.gait_frames = gait_frames
+    sprites.stride_columns = stride_columns
+    monkeypatch.setitem(sys.modules, "todoy.display.sprites", sprites)
+
+    terminal_run = types.ModuleType("todoy.display.terminal_run")
+
+    class FakeTerminalRun:
+        def __init__(self, width_cols: int, character_name: str) -> None:
+            self.width_cols = width_cols
+            self.character_name = character_name
+            self.tick_count = 0
+            state.terminal_inits.append((width_cols, character_name))
+
+        def tick(self) -> tuple[int, int]:
+            frames = gait_frames(self.character_name)
+            frame_index = self.tick_count % len(frames)
+            x_col = (self.tick_count * 3) % self.width_cols
+            self.tick_count += 1
+            return frame_index, x_col
+
+    def render_run_line(
+        x_col: int,
+        frame: str,
+        flag_text: str,
+        width_cols: int,
+        use_emoji: bool,
+        emoji: str,
+    ) -> str:
+        state.render_calls.append(
+            {
+                "x_col": x_col,
+                "frame": frame,
+                "flag_text": flag_text,
+                "width_cols": width_cols,
+                "use_emoji": use_emoji,
+                "emoji": emoji,
+            }
+        )
+        line = f"{frame}@{x_col}|{flag_text}|w={width_cols}|emoji={use_emoji}|{emoji}"
+        return line[:width_cols].ljust(width_cols)
+
+    terminal_run.TerminalRun = FakeTerminalRun
+    terminal_run.render_run_line = render_run_line
+    monkeypatch.setitem(sys.modules, "todoy.display.terminal_run", terminal_run)
+    return state
+
+
+def install_fake_run_core(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    due_batches: list[list[Todo]] | None = None,
+) -> FakeRunCoreState:
+    state = FakeRunCoreState(
+        flag_inputs=[],
+        reminder_inputs=[],
+        alarm_inputs=[],
+        alarm_updates=[],
+        alarm_clock_inits=[],
+    )
+    due_queue = list(due_batches or [])
+    core = types.ModuleType("todoy.display.overlay.core")
+
+    class FakeAlarmClock:
+        def __init__(self, snooze_minutes: int, now: Callable[[], datetime] | None = None) -> None:
+            state.alarm_clock_inits.append((snooze_minutes, now))
+            self._due: list[Todo] = []
+
+        def update(self, todos: list[Todo]) -> None:
+            state.alarm_updates.append([todo.text for todo in todos])
+            self._due = due_queue.pop(0) if due_queue else []
+
+        def due(self) -> list[Todo]:
+            return list(self._due)
+
+    def build_flag_line(todos: list[Todo], language: str) -> str:
+        texts = [todo.text for todo in todos]
+        state.flag_inputs.append((texts, language))
+        return f"flag:{language}:{','.join(texts) or 'empty'}"
+
+    def build_reminder_text(todos: list[Todo], language: str) -> str:
+        texts = [todo.text for todo in todos]
+        state.reminder_inputs.append((texts, language))
+        return f"reminder:{language}:{','.join(texts) or 'empty'}"
+
+    def build_alarm_text(todos: list[Todo], language: str) -> str:
+        texts = [todo.text for todo in todos]
+        state.alarm_inputs.append((texts, language))
+        return "\n".join(f"alarm:{language}:{todo.at}:{todo.text}" for todo in todos)
+
+    core.AlarmClock = FakeAlarmClock
+    core.build_flag_line = build_flag_line
+    core.build_reminder_text = build_reminder_text
+    core.build_alarm_text = build_alarm_text
+    monkeypatch.setitem(sys.modules, "todoy.display.overlay.core", core)
+    return state
+
+
+def run_namespace(
+    *,
+    character: str | None = None,
+    lang: str | None = "en",
+    interval: int | None = 30,
+    force_ascii: bool = True,
+    fps: int = 1,
+) -> Namespace:
+    return Namespace(
+        character=character,
+        lang=lang,
+        interval=interval,
+        force_ascii=force_ascii,
+        fps=fps,
+    )
 
 
 def test_init_wizard_builtin_only_writes_default_config(
@@ -1024,6 +1198,337 @@ def test_tui_config_error_prints_stderr_and_exits_1(
     assert captured.err == "Unknown source name: not-a-source\n"
     assert "Traceback" not in captured.err
     assert not data_file.exists()
+
+
+def test_run_loop_writes_cr_frames_and_refreshes_flag_on_interval(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import todoy.cli as cli
+
+    install_fake_display_modules(monkeypatch)
+    run_modules = install_fake_run_modules(monkeypatch)
+    run_core = install_fake_run_core(monkeypatch)
+    clock = FakeRunClock(advance_per_sleep=timedelta(minutes=1))
+    writes: list[str] = []
+
+    def collect_todos(
+        *,
+        include_done: bool,
+        config: Config | None = None,
+    ) -> tuple[list[Todo], list[Todo]]:
+        del include_done, config
+        if clock.current < datetime(2026, 8, 21, 9, 1, 0):
+            return [Todo(text="first", id=1)], []
+        return [Todo(text="second", id=2)], []
+
+    monkeypatch.setattr(cli, "_collect_todos", collect_todos)
+
+    exit_code = cli._run(
+        run_namespace(lang="ko", interval=1, fps=1),
+        BuiltinSource(),
+        sleep=clock.sleep,
+        now=clock.now,
+        write=writes.append,
+        max_frames=2,
+        width_reader=lambda: 40,
+    )
+
+    assert exit_code == 0
+    assert [call["flag_text"] for call in run_modules.render_calls] == [
+        "flag:ko:first",
+        "flag:ko:second",
+    ]
+    assert run_core.flag_inputs == [(["first"], "ko"), (["second"], "ko")]
+    assert run_core.reminder_inputs == [(["second"], "ko")]
+    assert writes[1] == "\nreminder:ko:second\n"
+    assert writes[0].startswith("\rcat-a@0|flag:ko:first|w=40|emoji=False|")
+    assert writes[2].startswith("\rcat-b@3|flag:ko:second|w=40|emoji=False|")
+    assert all(write.startswith("\r") for write in writes if "cat-" in write)
+    assert all("\x1b" not in write for write in writes)
+    assert clock.sleep_seconds == [1.0]
+    assert not data_file.exists()
+
+
+def test_run_loop_prints_alarm_block_above_marquee_on_fresh_line(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import todoy.cli as cli
+
+    install_fake_display_modules(monkeypatch)
+    install_fake_run_modules(monkeypatch)
+    due = Todo(text="standup", id=5, at="09:00")
+    run_core = install_fake_run_core(monkeypatch, due_batches=[[due]])
+    clock = FakeRunClock()
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli,
+        "_collect_todos",
+        lambda *, include_done, config=None: ([due], []),
+    )
+
+    exit_code = cli._run(
+        run_namespace(lang="en", interval=30, fps=1),
+        BuiltinSource(),
+        sleep=clock.sleep,
+        now=clock.now,
+        write=writes.append,
+        max_frames=1,
+        width_reader=lambda: 50,
+    )
+
+    assert exit_code == 0
+    assert writes[0] == "\nalarm:en:09:00:standup\n"
+    assert writes[1].startswith("\rcat-a@0|flag:en:standup|w=50|emoji=False|🐱")
+    assert run_core.alarm_updates == [["standup"]]
+    assert run_core.alarm_inputs == [(["standup"], "en")]
+    assert not data_file.exists()
+
+
+@pytest.mark.parametrize("interrupt_from", ["sleep", "write"])
+def test_run_keyboard_interrupt_writes_newline_and_returns_zero(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_from: str,
+) -> None:
+    import todoy.cli as cli
+
+    install_fake_display_modules(monkeypatch)
+    install_fake_run_modules(monkeypatch)
+    install_fake_run_core(monkeypatch)
+    clock = FakeRunClock()
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli,
+        "_collect_todos",
+        lambda *, include_done, config=None: ([Todo(text="task", id=1)], []),
+    )
+
+    def write(text: str) -> None:
+        writes.append(text)
+        if interrupt_from == "write" and text.startswith("\r"):
+            raise KeyboardInterrupt
+
+    def sleep(seconds: float) -> None:
+        del seconds
+        if interrupt_from == "sleep":
+            raise KeyboardInterrupt
+
+    exit_code = cli._run(
+        run_namespace(fps=3),
+        BuiltinSource(),
+        sleep=sleep,
+        now=clock.now,
+        write=write,
+        width_reader=lambda: 40,
+    )
+
+    assert exit_code == 0
+    assert writes[-1] == "\n"
+    assert any(write.startswith("\r") for write in writes)
+    assert not data_file.exists()
+
+
+def test_run_rechecks_terminal_width_occasionally_and_clamps_minimum(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import todoy.cli as cli
+
+    install_fake_display_modules(monkeypatch)
+    run_modules = install_fake_run_modules(monkeypatch)
+    install_fake_run_core(monkeypatch)
+    clock = FakeRunClock()
+    widths = iter([30, 10])
+    monkeypatch.setattr(
+        cli,
+        "_collect_todos",
+        lambda *, include_done, config=None: ([Todo(text="task", id=1)], []),
+    )
+
+    exit_code = cli._run(
+        run_namespace(fps=2),
+        BuiltinSource(),
+        sleep=clock.sleep,
+        now=clock.now,
+        write=lambda text: None,
+        max_frames=3,
+        width_reader=lambda: next(widths),
+    )
+
+    assert exit_code == 0
+    assert run_modules.terminal_inits == [(30, "cat"), (20, "cat")]
+    assert [call["width_cols"] for call in run_modules.render_calls] == [30, 30, 20]
+    assert not data_file.exists()
+
+
+def test_run_cli_flags_resolve_character_language_ascii_and_fps(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import todoy.cli as cli
+
+    install_fake_display_modules(monkeypatch)
+    run_modules = install_fake_run_modules(monkeypatch)
+    run_core = install_fake_run_core(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "_collect_todos",
+        lambda *, include_done, config=None: ([Todo(text="task", id=1)], []),
+    )
+    sleep_seconds: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleep_seconds.append(seconds)
+        raise KeyboardInterrupt
+
+    exit_code = cli._run(
+        run_namespace(character="robot", lang="ko", interval=3, force_ascii=True, fps=5),
+        BuiltinSource(),
+        sleep=sleep,
+        now=FakeRunClock().now,
+        write=lambda text: None,
+        width_reader=lambda: 40,
+    )
+
+    assert exit_code == 0
+    assert run_modules.terminal_inits == [(40, "robot")]
+    assert run_modules.render_calls[0]["use_emoji"] is False
+    assert run_modules.render_calls[0]["emoji"] == "🤖"
+    assert run_core.flag_inputs == [(["task"], "ko")]
+    assert sleep_seconds == [0.2]
+    assert not data_file.exists()
+
+
+def test_run_default_interval_comes_from_config(
+    data_file: Path,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import todoy.cli as cli
+
+    save_config(Config(reminder_interval_minutes=7), config_file)
+    install_fake_display_modules(monkeypatch)
+    install_fake_run_modules(monkeypatch)
+    run_core = install_fake_run_core(monkeypatch)
+    clock = FakeRunClock(advance_per_sleep=timedelta(minutes=3, seconds=30))
+    monkeypatch.setattr(
+        cli,
+        "_collect_todos",
+        lambda *, include_done, config=None: ([Todo(text="task", id=1)], []),
+    )
+
+    cli._run(
+        run_namespace(interval=None, fps=1),
+        BuiltinSource(),
+        sleep=clock.sleep,
+        now=clock.now,
+        write=lambda text: None,
+        max_frames=3,
+        width_reader=lambda: 40,
+    )
+    assert run_core.reminder_inputs == [(["task"], "en")]
+    assert not data_file.exists()
+
+
+@pytest.mark.parametrize("fps", ["0", "31"])
+def test_run_rejects_invalid_fps(
+    data_file: Path,
+    capsys: pytest.CaptureFixture[str],
+    fps: str,
+) -> None:
+    exit_code = main(["run", "--fps", fps])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "--fps" in captured.err
+    assert "1..30" in captured.err
+    assert not data_file.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="SIGINT semantics differ on Windows; injectable-loop tests cover the logic there",
+)
+def test_run_console_script_ascii_smoke(tmp_path: Path) -> None:
+    script = Path(sys.executable).parent / "todoy"
+    if not script.is_file():
+        pytest.skip(f"todoy console script not found at {script}")
+
+    env = os.environ.copy()
+    env["TODOY_CONFIG_FILE"] = str(tmp_path / "config.toml")
+    env["TODOY_DATA_FILE"] = str(tmp_path / "todos.json")
+    process = subprocess.Popen(
+        [str(script), "run", "--ascii", "--fps", "10"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    try:
+        time.sleep(1.5)
+        process.send_signal(signal.SIGINT)
+        stdout, stderr = process.communicate(timeout=5)
+
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        assert process.returncode == 0, stderr_text
+        assert stdout.count(b"\r") >= 2
+        assert b"\x1b" not in stdout
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=2)
+
+
+def _real_run_modules_available() -> bool:
+    try:
+        __import__("todoy.display.terminal_run")
+        __import__("todoy.display.sprites")
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not _real_run_modules_available(),
+    reason="todoy.display.terminal_run/todoy.display.sprites unavailable",
+)
+def test_real_run_modules_stride_wrap_and_render_contract() -> None:
+    from todoy.display.sprites import gait_frames, stride_columns
+    from todoy.display.terminal_run import TerminalRun, render_run_line
+
+    name = "horse"
+    width_cols = 20
+    frames = gait_frames(name)
+    stride = stride_columns(name)
+    runner = TerminalRun(width_cols, name)
+    samples = [runner.tick() for _ in range(len(frames) * 3)]
+    positions = [x_col for _, x_col in samples]
+
+    assert len(frames) >= 2
+    for index in range(len(frames) * 2):
+        assert (positions[index + len(frames)] - positions[index]) % width_cols == (
+            stride % width_cols
+        )
+
+    line = render_run_line(
+        width_cols - 1,
+        frames[0],
+        "FLAG",
+        width_cols,
+        False,
+        "🐎",
+    )
+    assert len(line) == width_cols
+    assert "\r" not in line
+    assert "\n" not in line
+    assert "\x1b" not in line
 
 
 def test_overlay_once_prints_reminder_text_without_backend(

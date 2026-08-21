@@ -54,6 +54,20 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M11 (follow-up) — 2026-08-21
+
+### Decisions
+
+- **`todoy run` — cross-platform in-terminal live mode (issue #15).** A single-line marquee redrawn with plain `\r` (no ANSI, no dependencies — works on Linux/Windows/macOS terminals alike): the character runs left-to-right and wraps ticker-style (never runs backwards), carrying the one-line flag message 2 columns behind; interval reminders and time alarms print as blocks above, then the run resumes.
+- **Real gait.** `display/sprites.py` holds per-character ASCII gait cycles — the horse gets a 4-frame gallop (`,,=(oo)=,,` legs gather→reach→extend→land) — and `STRIDE_COLUMNS`: movement is stride-locked (exactly N columns per full leg cycle, Bresenham-distributed), so feet never slide.
+- **Overlay facing + stride-sync.** The character view mirrors to face its travel direction (Apple's 🐎 faces left — moving right used to look like running backwards); gallop concentrates ~80% of horizontal advance into the airborne phase with per-cycle distance preserved, plus a subtle gallop-only squash-stretch.
+
+### Modifications from cross-review
+
+- `render_run_line` sanitizes flag text (an ESC sequence could leak into terminal output).
+- Gallop integrates piecewise across phase boundaries — a dt spanning a boundary no longer distorts the per-cycle distance (regression tests with non-aligned dts).
+- CLI formatting blocker fixed; the real-subprocess SIGINT smoke test is now committed (POSIX-gated).
+
 ## M10 (follow-up) — 2026-08-20
 
 ### Decisions

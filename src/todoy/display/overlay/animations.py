@@ -38,7 +38,7 @@ DASH_BURST_SPEED_PX_PER_SEC = 220.0
 DASH_PAUSE_RANGE_SECONDS = (0.6, 1.6)
 DASH_BURST_RANGE_SECONDS = (0.15, 0.4)
 
-GALLOP_SPEED_PX_PER_SEC = WALK_SPEED_PX_PER_SEC * 3.0  # ~3x walk, per contract
+GALLOP_SPEED_PX_PER_SEC = WALK_SPEED_PX_PER_SEC * 3.0  # ~3x walk, per contract (cycle AVERAGE)
 GALLOP_HOP_PEAK_HEIGHT_PX = 12.0  # <= 14px contract bound
 GALLOP_BEAT_DURATION_SECONDS = 0.09  # one short hop of the double-beat
 GALLOP_BEAT_GAP_SECONDS = 0.03  # brief flat contact between the two beats
@@ -46,6 +46,48 @@ GALLOP_STRIDE_REST_SECONDS = 0.15  # longer flat contact after the double-beat
 GALLOP_CYCLE_SECONDS = (
     GALLOP_BEAT_DURATION_SECONDS * 2 + GALLOP_BEAT_GAP_SECONDS + GALLOP_STRIDE_REST_SECONDS
 )
+
+# Stride-sync (M11 Task 28): a real gallop's forward reach happens while the
+# horse is airborne (y_offset > 0, i.e. during the two beats), not while its
+# hooves are in contact with the ground (the gap/rest flats) -- otherwise the
+# sprite reads as sliding/moonwalking rather than striding. We keep the same
+# per-cycle AVERAGE speed as before (GALLOP_SPEED_PX_PER_SEC, ~3x walk) but
+# redistribute it: most of the horizontal distance is covered during the
+# airborne beats, only a little during ground contact. The contract requires
+# >= 70% of each cycle's dx airborne; 80% leaves comfortable margin.
+GALLOP_AIRBORNE_DX_FRACTION = 0.8
+_GALLOP_AIRBORNE_TIME_SECONDS = GALLOP_BEAT_DURATION_SECONDS * 2
+_GALLOP_GROUND_TIME_SECONDS = GALLOP_CYCLE_SECONDS - _GALLOP_AIRBORNE_TIME_SECONDS
+_GALLOP_AIRBORNE_TIME_FRACTION = _GALLOP_AIRBORNE_TIME_SECONDS / GALLOP_CYCLE_SECONDS
+_GALLOP_GROUND_TIME_FRACTION = _GALLOP_GROUND_TIME_SECONDS / GALLOP_CYCLE_SECONDS
+GALLOP_AIRBORNE_SPEED_PX_PER_SEC = (
+    GALLOP_SPEED_PX_PER_SEC * GALLOP_AIRBORNE_DX_FRACTION / _GALLOP_AIRBORNE_TIME_FRACTION
+)
+GALLOP_GROUND_SPEED_PX_PER_SEC = (
+    GALLOP_SPEED_PX_PER_SEC * (1.0 - GALLOP_AIRBORNE_DX_FRACTION) / _GALLOP_GROUND_TIME_FRACTION
+)
+
+# Phase boundaries (seconds into one gallop cycle) of the four segments, in
+# order: beat 1 (airborne) -> gap (ground) -> beat 2 (airborne) -> rest
+# (ground, wraps back to 0). Shared by `_step_gallop`'s y-offset formula and
+# its piecewise speed integration below.
+_GALLOP_BEAT1_END = GALLOP_BEAT_DURATION_SECONDS
+_GALLOP_GAP_END = _GALLOP_BEAT1_END + GALLOP_BEAT_GAP_SECONDS
+_GALLOP_BEAT2_END = _GALLOP_GAP_END + GALLOP_BEAT_DURATION_SECONDS
+
+
+def _gallop_segment(phase: float) -> tuple[float, bool]:
+    """For `phase` (seconds into one gallop cycle, `0 <= phase < GALLOP_CYCLE_SECONDS`),
+    return `(segment_end, airborne)`: where the current beat/gap/rest segment ends and
+    whether it's an airborne (beat) or ground-contact (gap/rest) segment."""
+    if phase < _GALLOP_BEAT1_END:
+        return _GALLOP_BEAT1_END, True
+    if phase < _GALLOP_GAP_END:
+        return _GALLOP_GAP_END, False
+    if phase < _GALLOP_BEAT2_END:
+        return _GALLOP_BEAT2_END, True
+    return GALLOP_CYCLE_SECONDS, False
+
 
 MAX_Y_OFFSET_PX = 40.0
 
@@ -125,6 +167,15 @@ class CharacterMovement:
             raise ValueError("dt must be non-negative")
         return self._step_fn(dt)
 
+    @property
+    def facing(self) -> int:
+        """+1 when the character is moving/should draw facing right, -1 for
+        left. Backed by `self.direction`, which `_patrol` already latches to
+        the current travel direction and flips the instant an edge bounce
+        happens -- `facing` just exposes its sign. `still` never patrols, so
+        it stays at the +1 `direction` is initialized to, per contract."""
+        return 1 if self.direction >= 0.0 else -1
+
     # --- shared helpers ------------------------------------------------------
 
     def _patrol(self, dt: float, speed: float) -> None:
@@ -196,21 +247,44 @@ class CharacterMovement:
         return (self.x, 0.0)
 
     def _step_gallop(self, dt: float) -> tuple[float, float]:
-        self._patrol(dt, GALLOP_SPEED_PX_PER_SEC)
-        self._elapsed += dt
+        # Stride-sync: cover most of the cycle's ground during the airborne
+        # beats, only a little while hooves are down (see the constants'
+        # docstring above) -- same per-cycle average as before. A single
+        # `step(dt)` call can straddle a beat/gap/rest boundary (e.g. a dt
+        # that doesn't evenly divide the cycle), so the patrol has to be
+        # integrated piecewise, segment by segment, rather than picking one
+        # speed for the whole dt -- otherwise per-cycle dx (and the airborne
+        # fraction) would drift depending on how dt happens to align with
+        # the cycle, instead of staying exact for any dt.
         phase = self._elapsed % GALLOP_CYCLE_SECONDS
+        remaining = dt
+        iterations = 0
+        while remaining > 1e-12 and iterations < 100_000:
+            iterations += 1
+            segment_end, airborne = _gallop_segment(phase)
+            step = min(remaining, segment_end - phase)
+            if step <= 0.0:
+                # `phase` sits exactly at (or fp-past) a boundary -- move
+                # into the next segment without consuming any of `dt`.
+                phase = segment_end % GALLOP_CYCLE_SECONDS
+                continue
+            speed = GALLOP_AIRBORNE_SPEED_PX_PER_SEC if airborne else GALLOP_GROUND_SPEED_PX_PER_SEC
+            self._patrol(step, speed)
+            phase += step
+            remaining -= step
+            if phase >= GALLOP_CYCLE_SECONDS - 1e-12:
+                phase -= GALLOP_CYCLE_SECONDS
 
-        beat1_end = GALLOP_BEAT_DURATION_SECONDS
-        gap_end = beat1_end + GALLOP_BEAT_GAP_SECONDS
-        beat2_end = gap_end + GALLOP_BEAT_DURATION_SECONDS
+        self._elapsed += dt
+        final_phase = self._elapsed % GALLOP_CYCLE_SECONDS
 
-        if phase < beat1_end:
-            t = phase / GALLOP_BEAT_DURATION_SECONDS
+        if final_phase < _GALLOP_BEAT1_END:
+            t = final_phase / GALLOP_BEAT_DURATION_SECONDS
             y = GALLOP_HOP_PEAK_HEIGHT_PX * 4.0 * t * (1.0 - t)
-        elif phase < gap_end:
+        elif final_phase < _GALLOP_GAP_END:
             y = 0.0
-        elif phase < beat2_end:
-            t = (phase - gap_end) / GALLOP_BEAT_DURATION_SECONDS
+        elif final_phase < _GALLOP_BEAT2_END:
+            t = (final_phase - _GALLOP_GAP_END) / GALLOP_BEAT_DURATION_SECONDS
             y = GALLOP_HOP_PEAK_HEIGHT_PX * 4.0 * t * (1.0 - t)
         else:
             y = 0.0
