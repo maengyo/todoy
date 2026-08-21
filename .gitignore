@@ -22,3 +22,7 @@ htmlcov/
 
 # Scratch data/config used by demo/demo.tape recordings — never commit.
 demo/demo-tmp/
+
+# macOS Finder artifacts
+.DS_Store
+**/.DS_Store
