@@ -639,7 +639,7 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
         args.interval if args.interval is not None else config.reminder_interval_minutes
     )
     animations_module = importlib.import_module("todoy.display.overlay.animations")
-    movement = animations_module.validate_movement(
+    configured_movement = animations_module.validate_movement(
         args.movement if args.movement is not None else config.movement
     )
     bubble_effect = animations_module.validate_bubble_effect(
@@ -659,6 +659,7 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
 
     base_module = importlib.import_module("todoy.display.overlay.base")
     character = get_character(args.character if args.character is not None else config.character)
+    movement = _resolve_overlay_movement(configured_movement, character.name, animations_module)
     scheduler = core_module.ReminderScheduler(interval_minutes, config.snooze_minutes)
     options = base_module.OverlayOptions(
         character=character,
@@ -685,6 +686,21 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
 
     actions = _build_panel_actions(base_module, config)
     return backend.run(options, scheduler, get_reminder_text, get_todos, actions)
+
+
+def _resolve_overlay_movement(
+    configured_movement: str,
+    character_name: str,
+    animations_module: Any,
+) -> str:
+    if configured_movement != "auto":
+        return configured_movement
+
+    personas_module = importlib.import_module("todoy.display.overlay.personas")
+    movement = animations_module.validate_movement(personas_module.persona(character_name).movement)
+    if movement == "auto":
+        raise ValueError("Persona movement must be concrete, not auto")
+    return movement
 
 
 def _overlay_test_seconds() -> float | None:

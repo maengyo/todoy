@@ -153,9 +153,21 @@ $ uv sync --extra overlay   # or: pip install -e '.[overlay]'
 $ todoy overlay
 ```
 
-A transparent character wanders along the bottom of your screen and pops a
-speech bubble with today's todos on your configured interval (default 30 min,
-`[general] reminder_interval_minutes`). The bubble offers **Snooze** (temporary)
+A transparent character lives on your screen and reminds you of today's todos
+on your configured interval (default 30 min, `[general]
+reminder_interval_minutes`) — and every character behaves like itself:
+
+- **Sea creatures** (whale, octopus, crab, penguin) pop out of the "water"
+  below the screen edge with a splash, bob on the waves, and dive-and-resurface
+  when a reminder fires.
+- **Flyers** (butterfly, bee, owl, duck, dragon) cruise along the **top** of
+  your screen with the message hanging below them as a banner from their legs,
+  swooping when something fires.
+- Rabbits and frogs bounce in; ghosts, aliens and robots materialize with a
+  blink; everyone else strolls in from off-screen.
+- Movement defaults to **auto** — each character picks its natural preset
+  (horse gallops, butterfly floats, bee dashes…); set `movement` explicitly
+  to override. The bubble offers **Snooze** (temporary)
 and **Quit** — that's all, on purpose: the character never completes todos for
 you, and there is no permanent mute button. To silence it for good you have to
 edit your config yourself. Deliberate friction is the feature.

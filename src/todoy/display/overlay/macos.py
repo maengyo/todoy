@@ -29,6 +29,7 @@ from todoy.display.overlay.core import (
     build_alarm_text,
     build_flag_line,
 )
+from todoy.display.overlay.personas import EntranceAnimation, FlourishAnimation, persona
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 
     from todoy.display.overlay.base import OverlayOptions, PanelActions
     from todoy.display.overlay.core import ReminderScheduler
+    from todoy.display.overlay.personas import Persona
     from todoy.models import Todo
 
 # --- tunables ----------------------------------------------------------------
@@ -55,6 +57,18 @@ CHARACTER_WINDOW_SIZE = 110.0
 EMOJI_FONT_SIZE = 64.0
 CHARACTER_BOTTOM_MARGIN = 24.0
 
+# Sky zone (M13 Task 32): sky personas (persona.zone == "sky") cruise near
+# the TOP of the screen instead of the bottom -- the screen's actual menu
+# bar/notch clearance (`_OverlayController._sky_top_margin`, derived from
+# `NSScreen.frame()` vs `visibleFrame()` -- Codex review follow-up: this
+# used to be a hardcoded 24px guess, which undershoots on a notched
+# MacBook or overshoots on an external display with no menu bar) plus a
+# small fixed buffer, so the character never overlaps the menu bar. The
+# movement preset's y_offset (normally a "lift up" amount for ground/water)
+# is applied DOWNWARD from this cruise line instead, per contract section 2.
+MENU_BAR_HEIGHT_PX = 24.0  # fallback only, when a screen can't be queried at all
+SKY_TOP_BUFFER_PX = 8.0
+
 # Gallop-only squash-stretch (M11 Task 28): a subtle vertical scale synced to
 # the bounce phase (`y_offset`, 0..GALLOP_HOP_PEAK_HEIGHT_PX) -- stretched
 # tall near the top of each beat, squashed at ground contact. Applied on top
@@ -64,11 +78,24 @@ GALLOP_SQUASH_SCALE_MIN = 0.95
 GALLOP_SQUASH_SCALE_MAX = 1.05
 
 BUBBLE_WIDTH = 320.0
+# Deliberately NOT shrunk by the UI-polish compaction below: measured
+# against `_build_reminder_attributed_text`'s real `boundingRectWithSize_
+# options_` at BUBBLE_WIDTH, a common case (5 todos with reasonably
+# descriptive text) already needs ~125-143px depending on which taunt gets
+# picked (some wrap to 2 lines) -- shrinking this constant further clips
+# real content, which the compaction's own "same content" goal rules out.
+# All the actual height savings come from BUBBLE_PADDING/BUBBLE_BUTTON_ROW_
+# HEIGHT/the taunt font below instead.
 BUBBLE_TEXT_HEIGHT = 132.0
-BUBBLE_BUTTON_ROW_HEIGHT = 44.0
-BUBBLE_PADDING = 18.0
-BUBBLE_HEIGHT = BUBBLE_TEXT_HEIGHT + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING * 2
+# UI-polish compaction (user feedback: "the bubble panel is too tall and
+# the buttons are too big"): padding trimmed 18->12px, tighter line
+# spacing in `_build_reminder_attributed_text`, and a smaller button row
+# (below) -- together a visibly shorter panel with the same content.
+BUBBLE_PADDING = 12.0
 BUBBLE_GAP_ABOVE_CHARACTER = 6.0
+# Sky zone (M13 Task 32): the bubble message style goes BELOW a sky
+# character instead of above it (contract section 2) -- symmetric gap.
+BUBBLE_GAP_BELOW_CHARACTER = 6.0
 
 PANEL_CORNER_RADIUS = 16.0
 PANEL_FILL_ALPHA = 0.97
@@ -83,8 +110,16 @@ BUBBLE_TAIL_WIDTH = 22.0
 
 # Buttons: Snooze is the prominent accent action, Quit is a quiet text button.
 # (`bubble` message style only -- `flag` below has no buttons at all.)
-BUTTON_HEIGHT = 30.0
-BUTTON_CORNER_RADIUS = 8.0
+# UI-polish compaction: height trimmed 30->24px (still a comfortably
+# tappable click target for a mouse-driven desktop control) with a smaller
+# corner radius to match, and the button-row block below is now derived
+# from BUTTON_HEIGHT plus a small breathing-room gap rather than a
+# standalone magic number, so it shrinks along with the buttons.
+BUTTON_HEIGHT = 24.0
+BUBBLE_BUTTON_GAP_ABOVE = 8.0
+BUBBLE_BUTTON_ROW_HEIGHT = BUTTON_HEIGHT + BUBBLE_BUTTON_GAP_ABOVE
+BUBBLE_HEIGHT = BUBBLE_TEXT_HEIGHT + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING * 2
+BUTTON_CORNER_RADIUS = 7.0
 SNOOZE_BUTTON_WIDTH = 140.0
 QUIT_BUTTON_WIDTH = 76.0
 
@@ -126,6 +161,25 @@ FLAG_NOTCH_HEIGHT = 12.0
 # to dodge on this compact style, unlike the bubble's tail-in-the-corner.
 FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM = FLAG_PANEL_HEIGHT / 2.0
 FLAG_AUTO_HIDE_SECONDS = 10.0  # shorter than the bubble's 30s -- a glance, not a read
+
+# Banner style (M13 Task 32, persona.banner True): the message panel hangs
+# BELOW the character instead of riding the pole above it -- two thin string
+# lines from the character's feet down to the panel's top corners, like a
+# banner towed by a plane. Reuses most of `flag`'s panel geometry/flutter
+# (FLAG_PANEL_HEIGHT, FLAG_CORNER_RADIUS, FLAG_NOTCH_*, FLAG_TEXT_*,
+# FLAG_MIN_WIDTH/FLAG_MAX_WIDTH) -- only the string area above the panel and
+# the below-character gap are banner-specific.
+BANNER_STRING_HEIGHT_PX = 26.0
+BANNER_STRING_INSET_PX = 18.0
+BANNER_GAP_BELOW_CHARACTER = 2.0
+# Codex review follow-up: the two strings used to both start from a single
+# top-center point (a "V"), reading more like one string forking than two
+# separate strings. Per the contract's visual intent ("two thin string
+# lines from the character's feet"), they instead start from two spread
+# points -- roughly the character's left/right foot -- symmetric around
+# the window's horizontal center (where `_compute_message_origin` centers
+# the banner under the character).
+BANNER_FOOT_SPREAD_PX = 24.0
 
 # Flutter: a small periodic "wind" wave in the pennant's swallow-tail notch
 # depth while the flag is on screen -- kept to a small amplitude so it reads
@@ -201,6 +255,30 @@ class _OverlayController(AppKit.NSObject):
         self.get_todos = get_todos
         self.actions = actions
         self.alarm_clock = AlarmClock(scheduler.snooze_minutes)
+        # This character's nature (M13 Task 31/32): zone, launch entrance,
+        # fire-time flourish, banner-below message style, default movement --
+        # looked up once here and never re-derived, so it's stable for the
+        # life of this controller even if `todoy.display.overlay.personas`'s
+        # catalog changes between runs.
+        self.persona: Persona = persona(self.options.character.name)
+        # Launch-entrance curve, driven a tick at a time from `onWanderTick_`
+        # (the same 30fps timer that drives normal wandering -- see the
+        # class docstring there) -- `None` once finished, at which point
+        # `onWanderTick_` falls through to normal `CharacterMovement.step`.
+        self.entrance: EntranceAnimation | None = None
+        # Fire-time flourish curve, started additively by `_show_message`
+        # (see `_start_flourish`) and likewise driven from `onWanderTick_`;
+        # `None` when idle/finished. Deliberately does not preempt an
+        # in-progress entrance (see `_start_flourish`) -- non-disruptive per
+        # contract section 2.
+        self.flourish: FlourishAnimation | None = None
+        # True when a fire happened while the launch entrance was still in
+        # progress -- `onWanderTick_` starts the deferred flourish the
+        # instant the entrance finishes (see `_start_flourish`). One slot
+        # is enough: a second fire before the entrance finishes just keeps
+        # this True (same persona.flourish kind every time, so there is
+        # nothing distinct to queue).
+        self._pending_flourish = False
         # Whether the bubble currently on screen is an alarm (vs. the regular
         # interval reminder) -- decides what Snooze re-arms.
         self._showing_alarm = False
@@ -213,7 +291,7 @@ class _OverlayController(AppKit.NSObject):
         # Set only while a `flag`-style message window is on screen (rebuilt
         # fresh -- see `_build_flag_window` -- each time one fires, since its
         # width depends on that fire's text); `None` for `bubble`.
-        self.flag_view: _FlagPanelView | None = None
+        self.flag_view: _FlagPanelView | _BannerPanelView | None = None
         self.hide_timer: AppKit.NSTimer | None = None
         self.shake_timer: AppKit.NSTimer | None = None
         # `flag`-only: drives the pennant's periodic "wind" flutter while it
@@ -286,6 +364,50 @@ class _OverlayController(AppKit.NSObject):
         return screen.frame() if screen is not None else Foundation.NSMakeRect(0, 0, 1440, 900)
 
     @objc.python_method
+    def _sky_top_margin(self) -> float:
+        """Clearance to keep between a sky persona's cruise line and the
+        very top of the screen: the screen's real menu bar/notch height
+        (Codex review follow-up, M13 Task 32 -- `_menu_bar_clearance_px`
+        derived from the actual `NSScreen.frame()` vs `visibleFrame()`,
+        replacing a hardcoded 24px guess that undershoots a notched
+        display's menu bar and overshoots a display with none) plus a
+        small fixed buffer. Falls back to `MENU_BAR_HEIGHT_PX` only when no
+        screen can be queried, or the two frames don't actually indicate
+        any top inset.
+        """
+        screen = AppKit.NSScreen.mainScreen()
+        if screen is None:
+            clearance = MENU_BAR_HEIGHT_PX
+        else:
+            clearance = _menu_bar_clearance_px(screen.frame(), screen.visibleFrame())
+            if clearance <= 0.0:
+                clearance = MENU_BAR_HEIGHT_PX
+        return clearance + SKY_TOP_BUFFER_PX
+
+    @objc.python_method
+    def _character_zone_y(self, screen_frame: AppKit.NSRect, y_offset: float) -> float:
+        """Baseline y-origin for the character window given the movement
+        preset's `y_offset` for this tick (M13 Task 32, contract section 2).
+
+        `ground`/`water` personas rest at the bottom edge with `y_offset`
+        lifting UP from it -- unchanged pre-M13 behavior. `sky` personas
+        instead cruise near the TOP of the screen (the real menu bar/notch
+        clearance -- see `_sky_top_margin` -- plus a small buffer), with
+        `y_offset` applied DOWNWARD from that cruise line, so their
+        movement preset's bob reads as a gentle dip rather than pushing
+        them into the menu bar.
+        """
+        if self.persona.zone == "sky":
+            cruise_y = (
+                screen_frame.origin.y
+                + screen_frame.size.height
+                - CHARACTER_WINDOW_SIZE
+                - self._sky_top_margin()
+            )
+            return cruise_y - y_offset
+        return screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN + y_offset
+
+    @objc.python_method
     def _build_character_window(self) -> None:
         screen_frame = self._screen_frame()
         size = CHARACTER_WINDOW_SIZE
@@ -293,8 +415,18 @@ class _OverlayController(AppKit.NSObject):
         self.movement = CharacterMovement(self.options.movement, travel_width=travel_width)
 
         x, y_offset = self.movement.step(0.0)
-        start_x = screen_frame.origin.x + x
-        start_y = screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN + y_offset
+
+        # Launch entrance (M13 Task 32): sampled once here at t=0 so the
+        # window's very first paint already shows the entrance's starting
+        # pose (e.g. materialize's alpha 0, splash's below-baseline y)
+        # instead of flashing the resting pose for one frame before the
+        # first `onWanderTick_` tick picks it up.
+        entrance = EntranceAnimation(self.persona.entrance, char_height=CHARACTER_WINDOW_SIZE)
+        ex, ey, alpha, scale = entrance.step(0.0)
+        self.entrance = None if entrance.finished else entrance
+
+        start_x = screen_frame.origin.x + x + ex
+        start_y = self._character_zone_y(screen_frame, y_offset) + ey
         frame = Foundation.NSMakeRect(start_x, start_y, size, size)
 
         window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -308,6 +440,7 @@ class _OverlayController(AppKit.NSObject):
         window.setHasShadow_(False)
         window.setLevel_(AppKit.NSFloatingWindowLevel)
         window.setIgnoresMouseEvents_(False)
+        window.setAlphaValue_(alpha)
         window.setCollectionBehavior_(
             AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
             | AppKit.NSWindowCollectionBehaviorStationary
@@ -324,7 +457,7 @@ class _OverlayController(AppKit.NSObject):
 
         self.char_window = window
         self.char_view = content_view
-        self._apply_character_orientation(y_offset)
+        self._apply_character_orientation(y_offset, extra_scale=scale)
 
     @objc.python_method
     def _load_character_image(self) -> AppKit.NSImage | None:
@@ -348,11 +481,13 @@ class _OverlayController(AppKit.NSObject):
         return image
 
     @objc.python_method
-    def _apply_character_orientation(self, y_offset: float) -> None:
-        """Mirror the character to face its travel direction and, for
-        `gallop` only, apply a subtle squash-stretch synced to the bounce
-        phase. Pure view-state -- doesn't touch the window frame, so it
-        can't disturb click regions, flag ride-along, or clamping."""
+    def _apply_character_orientation(self, y_offset: float, extra_scale: float = 1.0) -> None:
+        """Mirror the character to face its travel direction, apply, for
+        `gallop` only, a subtle squash-stretch synced to the bounce phase,
+        and layer on `extra_scale` (the entrance/flourish curve's uniform
+        scale, M13 Task 32 -- 1.0 when neither is active). Pure view-state
+        -- doesn't touch the window frame, so it can't disturb click
+        regions, flag/banner ride-along, or clamping."""
         view = self.char_view
         movement = self.movement
         if view is None or movement is None:
@@ -369,30 +504,68 @@ class _OverlayController(AppKit.NSObject):
         else:
             squash_scale = 1.0
 
-        if view.facing == movement.facing and view.squash_scale == squash_scale:
+        if (
+            view.facing == movement.facing
+            and view.squash_scale == squash_scale
+            and view.extra_scale == extra_scale
+        ):
             return
         view.facing = movement.facing
         view.squash_scale = squash_scale
+        view.extra_scale = extra_scale
         view.setNeedsDisplay_(True)
 
     # --- wandering ---------------------------------------------------------
 
     def onWanderTick_(self, timer: AppKit.NSTimer) -> None:
+        """Advance the character one 30fps tick: normal patrol movement, OR
+        -- while a launch entrance or fire-time flourish is in progress
+        (M13 Task 32) -- that curve's (x_off, y_off, alpha, scale) applied
+        additively on top of the movement's resting position instead.
+
+        Movement itself is held still (`movement.step(0.0)`, which returns
+        the current position unchanged) for the duration of the entrance,
+        so "movement starts once finished" per contract section 2 -- once
+        `entrance.finished`, this falls through to the normal
+        `movement.step(WANDER_TICK_SECONDS)` path on the very next tick. A
+        flourish, in contrast, layers on top of movement that keeps
+        advancing normally -- it must not disturb wandering, per contract.
+        """
         window = self.char_window
         if window is None or self.movement is None:
             return
 
         screen_frame = self._screen_frame()
-        x, y_offset = self.movement.step(WANDER_TICK_SECONDS)
-        new_x = screen_frame.origin.x + x
-        new_y = screen_frame.origin.y + CHARACTER_BOTTOM_MARGIN + y_offset
+
+        if self.entrance is not None and not self.entrance.finished:
+            x, y_offset = self.movement.step(0.0)
+            ex, ey, alpha, scale = self.entrance.step(WANDER_TICK_SECONDS)
+            if self.entrance.finished:
+                self.entrance = None
+                if self._pending_flourish:
+                    # A message fired while the entrance was still running
+                    # (see `_start_flourish`) -- start it now, the instant
+                    # the entrance clears, instead of dropping it.
+                    self._start_flourish()
+        elif self.flourish is not None and not self.flourish.finished:
+            x, y_offset = self.movement.step(WANDER_TICK_SECONDS)
+            ex, ey, alpha, scale = self.flourish.step(WANDER_TICK_SECONDS)
+            if self.flourish.finished:
+                self.flourish = None
+        else:
+            x, y_offset = self.movement.step(WANDER_TICK_SECONDS)
+            ex, ey, alpha, scale = 0.0, 0.0, 1.0, 1.0
+
+        new_x = screen_frame.origin.x + x + ex
+        new_y = self._character_zone_y(screen_frame, y_offset) + ey
 
         window.setFrameOrigin_(Foundation.NSMakePoint(new_x, new_y))
-        self._apply_character_orientation(y_offset)
+        window.setAlphaValue_(alpha)
+        self._apply_character_orientation(y_offset, extra_scale=scale)
 
-        # Only `flag` rides along with the character every tick; `bubble`
-        # appears at show-time position and stays put until hidden, per the
-        # message-style contract.
+        # Only `flag`/banner rides along with the character every tick;
+        # `bubble` appears at show-time position and stays put until
+        # hidden, per the message-style contract.
         if (
             self.bubble_window is not None
             and self.bubble_window.isVisible()
@@ -509,7 +682,10 @@ class _OverlayController(AppKit.NSObject):
         self._cancel_bubble_shake()
         self._cancel_flutter()
         if self.options.message_style == "flag":
-            self._build_flag_window(text)
+            if self.persona.banner:
+                self._build_banner_window(text)
+            else:
+                self._build_flag_window(text)
         else:
             if self.bubble_window is None:
                 self._build_bubble_window()
@@ -522,6 +698,32 @@ class _OverlayController(AppKit.NSObject):
         self._reset_hide_timer()
         if self.options.message_style == "flag":
             self._start_flutter()
+        self._start_flourish()
+
+    @objc.python_method
+    def _start_flourish(self) -> None:
+        """Start this persona's fire-time flourish (M13 Task 32, contract
+        section 2): additive on top of normal wandering via `onWanderTick_`,
+        never disturbing click regions, snooze/quit, ride-along, clamps, or
+        timers -- it only nudges the character window's origin/alpha/scale.
+
+        Deferred (not dropped) while the launch entrance is still in
+        progress -- a flourish must never preempt or fight the entrance for
+        the same window frame, but an alarm CAN genuinely fire mid-entrance
+        in practice (the 1s reminder-check tick races a 0.8-1.4s entrance;
+        `FIRST_FIRE_DELAY_SECONDS`'s 5s guaranteed reminder is comfortably
+        past it, but an earlier *alarm* is not bounded that way). Sets
+        `self._pending_flourish`, which `onWanderTick_` checks the instant
+        the entrance finishes and starts the flourish then (Codex review
+        follow-up, M13 Task 32: this used to just skip the flourish
+        entirely in that race, silently dropping it).
+        """
+        if self.entrance is not None and not self.entrance.finished:
+            self._pending_flourish = True
+            return
+        self._pending_flourish = False
+        flourish = FlourishAnimation(self.persona.flourish, char_height=CHARACTER_WINDOW_SIZE)
+        self.flourish = None if flourish.finished else flourish
 
     @objc.python_method
     def _build_bubble_window(self) -> None:
@@ -597,19 +799,33 @@ class _OverlayController(AppKit.NSObject):
     def _compute_message_origin(self) -> AppKit.NSPoint | None:
         """The message window's resting origin (no shake offset applied).
 
-        For `flag` this is clamped to the screen (contract: "the flag must
-        stay fully on screen"); `bubble` is left unclamped, matching its
-        pre-existing behavior.
+        For `flag`/banner this is clamped to the screen (contract: "the
+        flag/banner must stay fully on screen"); `bubble` is left
+        unclamped, matching its pre-existing behavior.
+
+        Vertical placement (M13 Task 32, contract section 2):
+        - `flag` + `persona.banner`: hangs BELOW the character (two
+          strings from its feet down to the panel), not above on a pole.
+        - `bubble` + `persona.zone == "sky"`: goes BELOW a sky character
+          (which cruises near the top) instead of above it.
+        - Every other combination keeps the pre-M13 above-the-character
+          placement.
         """
         if self.char_window is None or self.bubble_window is None:
             return None
         char_frame = self.char_window.frame()
-        window_width = self.bubble_window.frame().size.width
+        window_frame = self.bubble_window.frame()
+        window_width = window_frame.size.width
         x = char_frame.origin.x + char_frame.size.width / 2 - window_width / 2
 
         if self.options.message_style == "flag":
-            y = char_frame.origin.y + char_frame.size.height + FLAG_GAP_ABOVE_CHARACTER
+            if self.persona.banner:
+                y = char_frame.origin.y - window_frame.size.height - BANNER_GAP_BELOW_CHARACTER
+            else:
+                y = char_frame.origin.y + char_frame.size.height + FLAG_GAP_ABOVE_CHARACTER
             x = self._clamp_x_to_screen(x, window_width)
+        elif self.persona.zone == "sky":
+            y = char_frame.origin.y - window_frame.size.height - BUBBLE_GAP_BELOW_CHARACTER
         else:
             y = char_frame.origin.y + char_frame.size.height + BUBBLE_GAP_ABOVE_CHARACTER
 
@@ -662,10 +878,29 @@ class _OverlayController(AppKit.NSObject):
         `NSAnimationContext` (<= `BUBBLE_EFFECT_DURATION_SECONDS`); shake
         appears instantly and then wiggles horizontally with chained
         one-shot `NSTimer`s; none appears instantly with no animation.
+
+        Bug fix (user report: "고래를 보면 메시지가 캐릭터를 안따라가" --
+        reproduced with whale + `flag` style): `flag`/banner windows ride
+        along with the character every ~33ms wander tick
+        (`onWanderTick_` -> `_apply_message_window_frame` ->
+        `setFrameOrigin_`, a direct/instant set). `pop` and `slide` drive
+        the window's FRAME through `.animator()`, which schedules its own
+        ~`BUBBLE_EFFECT_DURATION_SECONDS`-long implicit Core Animation on
+        that same window -- competing with every ride-along tick during
+        that window, so the message visibly freezes/lags behind a moving
+        character (worst on a constantly-walking persona like whale) until
+        the animation finishes and the two reconcile. `fade`/`shake`/`none`
+        never touch the frame via `.animator()` and were never affected.
+        For a riding-along style, `pop`/`slide` are downgraded to `fade`'s
+        alpha-only entrance (frame set once, directly, to the target --
+        never interpolated) so there is nothing left to fight the ride-along
+        ticks; `bubble` (which shows once and stays put) is unaffected.
         """
         window = self.bubble_window
         assert window is not None
         effect = self.options.bubble_effect
+        if self.options.message_style == "flag" and effect in ("pop", "slide"):
+            effect = "fade"
         target_frame = window.frame()
 
         if effect == "pop":
@@ -834,6 +1069,55 @@ class _OverlayController(AppKit.NSObject):
 
         self.bubble_window = window
         self.bubble_text_field = None
+        self.flag_view = content
+
+    @objc.python_method
+    def _build_banner_window(self, text: str) -> None:
+        """Rebuild `self.bubble_window` as a banner-below pennant sized to
+        `text` (M13 Task 32, `persona.banner`): the same pennant panel as
+        `_build_flag_window`, but hanging BELOW the character from two thin
+        strings instead of riding a pole above it. Rebuilt fresh on every
+        fire, same rationale as `_build_flag_window`.
+        """
+        attributed = _build_flag_attributed_text(text)
+        text_width = attributed.size().width
+        content_width = (
+            text_width + FLAG_TEXT_PADDING_LEFT + FLAG_TEXT_PADDING_RIGHT + FLAG_NOTCH_DEPTH
+        )
+        panel_width = min(max(content_width, FLAG_MIN_WIDTH), FLAG_MAX_WIDTH)
+        window_height = FLAG_PANEL_HEIGHT + BANNER_STRING_HEIGHT_PX
+
+        if self.bubble_window is not None:
+            self.bubble_window.orderOut_(None)
+
+        frame = Foundation.NSMakeRect(0, 0, panel_width, window_height)
+        window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame,
+            AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
+            AppKit.NSBackingStoreBuffered,
+            False,
+        )
+        window.setOpaque_(False)
+        window.setBackgroundColor_(AppKit.NSColor.clearColor())
+        window.setHasShadow_(True)
+        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        window.setCollectionBehavior_(
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorStationary
+        )
+
+        content = _BannerPanelView.alloc().initWithFrame_(frame)
+        content.controller = self
+        content.panel_height = FLAG_PANEL_HEIGHT
+        content.string_inset = BANNER_STRING_INSET_PX
+        content.set_text(attributed, FLAG_TEXT_PADDING_LEFT)
+        window.setContentView_(content)
+
+        self.bubble_window = window
+        self.bubble_text_field = None
+        # Reused as the generic flutter-target attribute -- `_apply_flutter_
+        # frame` only needs `.flutter_offset`/`setNeedsDisplay_`, which both
+        # `_FlagPanelView` and `_BannerPanelView` provide.
         self.flag_view = content
 
     @objc.python_method
@@ -1220,6 +1504,24 @@ class _OverlayController(AppKit.NSObject):
         self._refresh_panel_list()
 
 
+def _menu_bar_clearance_px(screen_frame: AppKit.NSRect, visible_frame: AppKit.NSRect) -> float:
+    """The vertical gap between `screen_frame`'s top edge and `visible_
+    frame`'s top edge -- i.e. the menu bar (or notch) height reserved at
+    the top of the screen (`NSScreen.frame()` vs `NSScreen.visibleFrame()`
+    -- Codex review follow-up, M13 Task 32 sky-zone cruise clearance).
+
+    Module-level and struct-only (no `NSScreen` object needed) so it's
+    directly unit-testable with fake rects, independent of the real
+    display's actual menu bar height. Returns 0.0 (never negative) if the
+    two frames don't indicate any top inset at all -- callers apply their
+    own hardcoded fallback in that case (see `_OverlayController.
+    _sky_top_margin`).
+    """
+    top = screen_frame.origin.y + screen_frame.size.height
+    visible_top = visible_frame.origin.y + visible_frame.size.height
+    return max(0.0, top - visible_top)
+
+
 def _scaled_frame(frame: AppKit.NSRect, scale: float) -> AppKit.NSRect:
     """`frame` shrunk/grown by `scale`, keeping the same center point."""
     new_width = frame.size.width * scale
@@ -1268,7 +1570,7 @@ def _make_primary_button(
     button.setWantsLayer_(True)
     button.layer().setBackgroundColor_(AppKit.NSColor.controlAccentColor().CGColor())
     button.layer().setCornerRadius_(BUTTON_CORNER_RADIUS)
-    font = AppKit.NSFont.systemFontOfSize_weight_(13.0, AppKit.NSFontWeightSemibold)
+    font = AppKit.NSFont.systemFontOfSize_weight_(12.0, AppKit.NSFontWeightSemibold)
     attrs = {
         AppKit.NSFontAttributeName: font,
         AppKit.NSForegroundColorAttributeName: AppKit.NSColor.whiteColor(),
@@ -1291,7 +1593,7 @@ def _make_quiet_button(
     button = AppKit.NSButton.alloc().initWithFrame_(frame)
     button.setBordered_(False)
     button.setButtonType_(AppKit.NSButtonTypeMomentaryChange)
-    font = AppKit.NSFont.systemFontOfSize_weight_(13.0, AppKit.NSFontWeightRegular)
+    font = AppKit.NSFont.systemFontOfSize_weight_(12.0, AppKit.NSFontWeightRegular)
     attrs = {
         AppKit.NSFontAttributeName: font,
         AppKit.NSForegroundColorAttributeName: AppKit.NSColor.secondaryLabelColor(),
@@ -1409,13 +1711,18 @@ def _build_reminder_attributed_text(text: str) -> AppKit.NSAttributedString:
     items, and the blank spacer line `core.build_reminder_text` inserts) is
     regular-weight `labelColor`. Content and line order are untouched -- only
     per-line font/color attributes are applied.
+
+    UI-polish compaction (user feedback: "the bubble panel is too tall"):
+    the taunt shrunk one step (15pt -> 14pt, still the largest/boldest line
+    for hierarchy) and line/paragraph spacing tightened, contributing to a
+    visibly shorter panel alongside `BUBBLE_PADDING`/`BUTTON_HEIGHT`.
     """
-    taunt_font = AppKit.NSFont.systemFontOfSize_weight_(15.0, AppKit.NSFontWeightSemibold)
+    taunt_font = AppKit.NSFont.systemFontOfSize_weight_(14.0, AppKit.NSFontWeightSemibold)
     body_font = AppKit.NSFont.systemFontOfSize_weight_(13.0, AppKit.NSFontWeightRegular)
 
     paragraph_style = AppKit.NSMutableParagraphStyle.alloc().init()
-    paragraph_style.setLineSpacing_(3.0)
-    paragraph_style.setParagraphSpacing_(2.0)
+    paragraph_style.setLineSpacing_(1.0)
+    paragraph_style.setParagraphSpacing_(1.0)
 
     result = AppKit.NSMutableAttributedString.alloc().init()
     lines = text.split("\n")
@@ -1653,6 +1960,90 @@ class _FlagPanelView(AppKit.NSView):
             self.controller.onSnoozeClicked_(self)
 
 
+class _BannerPanelView(AppKit.NSView):
+    """Banner-below message-window content (M13 Task 32, `persona.banner`):
+    the same single-line pennant panel as `_FlagPanelView` (swallow-tail
+    notch, flutter, click-anywhere-to-snooze), but occupying the BOTTOM of
+    the view -- `[0, panel_height]` -- with two thin string lines drawn
+    above it, from two spread points at the view's top (roughly the
+    character's left/right foot, just off the top of this window -- see
+    `BANNER_FOOT_SPREAD_PX`) down to the panel's top-left and top-right
+    corners. Reads as a banner towed by a plane rather than a pennant on a
+    pole.
+
+    `flutter_offset`/`set_text` match `_FlagPanelView` exactly, so the
+    controller's flutter/text plumbing (`_start_flutter`,
+    `_apply_flutter_frame`) works unchanged against either view.
+    """
+
+    controller: _OverlayController | None = None
+    panel_height: float = 0.0
+    string_inset: float = 0.0
+    flutter_offset: float = 0.0
+    _text: AppKit.NSAttributedString | None = None
+    _text_x: float = 0.0
+
+    @objc.python_method
+    def set_text(self, attributed: AppKit.NSAttributedString, text_x: float) -> None:
+        self._text = attributed
+        self._text_x = text_x
+
+    def drawRect_(self, rect: AppKit.NSRect) -> None:
+        bounds = self.bounds()
+        panel_rect = Foundation.NSMakeRect(0.0, 0.0, bounds.size.width, self.panel_height)
+
+        notch_depth = max(1.0, FLAG_NOTCH_DEPTH + self.flutter_offset)
+        path = _pennant_path(
+            panel_rect,
+            FLAG_CORNER_RADIUS,
+            notch_depth,
+            FLAG_NOTCH_HEIGHT,
+            FLAG_NOTCH_OFFSET_FROM_PANEL_BOTTOM,
+        )
+
+        AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(PANEL_FILL_ALPHA).setFill()
+        path.fill()
+
+        AppKit.NSColor.separatorColor().colorWithAlphaComponent_(PANEL_BORDER_ALPHA).setStroke()
+        path.setLineWidth_(1.0)
+        path.stroke()
+
+        if bounds.size.height > self.panel_height:
+            top_y = bounds.size.height
+            center_x = bounds.size.width / 2.0
+            # Two spread top attach points (left-foot/right-foot), not one
+            # shared top-center point -- see BANNER_FOOT_SPREAD_PX.
+            half_spread = min(BANNER_FOOT_SPREAD_PX / 2.0, center_x)
+            left_foot_x = center_x - half_spread
+            right_foot_x = center_x + half_spread
+            left_x = self.string_inset
+            right_x = bounds.size.width - self.string_inset
+            strings = AppKit.NSBezierPath.bezierPath()
+            strings.moveToPoint_(Foundation.NSMakePoint(left_foot_x, top_y))
+            strings.lineToPoint_(Foundation.NSMakePoint(left_x, self.panel_height))
+            strings.moveToPoint_(Foundation.NSMakePoint(right_foot_x, top_y))
+            strings.lineToPoint_(Foundation.NSMakePoint(right_x, self.panel_height))
+            AppKit.NSColor.secondaryLabelColor().setStroke()
+            strings.setLineWidth_(1.0)
+            strings.stroke()
+
+        if self._text is not None:
+            text_height = self._text.size().height
+            available = self.panel_height - text_height
+            text_y = available / 2.0
+            self._text.drawAtPoint_(Foundation.NSMakePoint(self._text_x, text_y))
+
+    def isFlipped(self) -> bool:
+        return False
+
+    def mouseDown_(self, event: AppKit.NSEvent) -> None:
+        # No buttons on the compact banner -- clicking anywhere on the
+        # panel snoozes, alarm-aware exactly like the bubble's Snooze
+        # button (same behavior as `_FlagPanelView.mouseDown_`).
+        if self.controller is not None:
+            self.controller.onSnoozeClicked_(self)
+
+
 _cached_emoji_draw_attrs: dict[str, AppKit.NSFont] | None = None
 
 
@@ -1675,10 +2066,11 @@ def _emoji_draw_attrs() -> dict[str, AppKit.NSFont]:
 class _CharacterView(AppKit.NSView):
     """Draws the character (user image or large emoji) and handles clicks.
 
-    `facing`/`squash_scale` (set by `_OverlayController._apply_character_
-    orientation`, driven by `CharacterMovement.facing`/gallop's `y_offset`)
-    are purely cosmetic -- they only affect what `drawRect_` paints, applied
-    as a graphics-state transform saved/restored around the draw calls. They
+    `facing`/`squash_scale`/`extra_scale` (set by `_OverlayController.
+    _apply_character_orientation`, driven by `CharacterMovement.facing`/
+    gallop's `y_offset`/the active entrance-or-flourish curve's `scale`) are
+    purely cosmetic -- they only affect what `drawRect_` paints, applied as
+    a graphics-state transform saved/restored around the draw calls. They
     never touch the view's frame/bounds, so hit-testing (`mouseDown_`, and
     AppKit's own click routing) is completely unaffected.
     """
@@ -1692,6 +2084,10 @@ class _CharacterView(AppKit.NSView):
     # Gallop-only squash-stretch, synced to bounce phase; 1.0 (no-op) for
     # every other movement -- see GALLOP_SQUASH_SCALE_MIN/MAX above.
     squash_scale: float = 1.0
+    # Launch-entrance / fire-time-flourish uniform scale (M13 Task 32):
+    # `personas.EntranceAnimation`/`FlourishAnimation`'s `scale` output,
+    # applied on top of `squash_scale`; 1.0 (no-op) when neither is active.
+    extra_scale: float = 1.0
     # Emoji draw-call cache (Codex review follow-up, M12 Task 29 nit): with
     # gallop's squash-stretch continuously varying `squash_scale`,
     # `drawRect_` fires on essentially every 30fps wander tick -- caching
@@ -1714,7 +2110,10 @@ class _CharacterView(AppKit.NSView):
             center_y = bounds.size.height / 2.0
             transform = AppKit.NSAffineTransform.transform()
             transform.translateXBy_yBy_(center_x, center_y)
-            transform.scaleXBy_yBy_(-1.0 if self.facing >= 0 else 1.0, self.squash_scale)
+            transform.scaleXBy_yBy_(
+                (-1.0 if self.facing >= 0 else 1.0) * self.extra_scale,
+                self.squash_scale * self.extra_scale,
+            )
             transform.translateXBy_yBy_(-center_x, -center_y)
             transform.concat()
             self._draw_content(bounds)

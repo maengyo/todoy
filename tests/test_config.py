@@ -10,6 +10,7 @@ import pytest
 
 from todoy.config import (
     DEFAULT_INTERVAL_MINUTES,
+    DEFAULT_MOVEMENT,
     Config,
     build_sources,
     config_path,
@@ -32,10 +33,15 @@ def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
     assert config.character == "cat"
     assert config.character_image is None
     assert config.snooze_minutes == 5
-    assert config.movement == "walk"
+    assert config.movement == "auto"
     assert config.bubble_effect == "pop"
     assert config.message_style == "bubble"
     assert config.daily_clear is False
+
+
+def test_default_movement_is_auto() -> None:
+    assert DEFAULT_MOVEMENT == "auto"
+    assert Config().movement == "auto"
 
 
 def test_config_path_todoy_config_file_wins(
@@ -131,9 +137,22 @@ character = "robot"
     config = load_config(path)
 
     assert config.character == "robot"
-    assert config.movement == "walk"
+    assert config.movement == "auto"
     assert config.bubble_effect == "pop"
     assert config.message_style == "bubble"
+
+
+def test_load_config_preserves_explicit_walk_movement(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[display]
+movement = "walk"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert load_config(path).movement == "walk"
 
 
 def test_load_config_treats_empty_display_image_as_none(tmp_path: Path) -> None:
@@ -305,6 +324,17 @@ def test_save_config_omits_default_daily_clear(tmp_path: Path) -> None:
     save_config(Config(), path)
 
     assert "daily_clear" not in path.read_text(encoding="utf-8")
+
+
+def test_save_config_omits_auto_movement_when_effective_default(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    save_config(Config(character="robot", movement="auto"), path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "[display]" in text
+    assert "movement" not in text
+    assert load_config(path) == Config(character="robot")
 
 
 def test_save_config_omits_default_animation_keys_from_nondefault_display_table(

@@ -30,12 +30,25 @@ from todoy.display.overlay.animations import (
 TRAVEL_WIDTH = 800.0
 MAX_Y_OFFSET = 40.0
 
+# "auto" (M13 Task 33) is a config-resolution sentinel, not a real preset --
+# `CharacterMovement` explicitly rejects it (see
+# `test_auto_movement_is_config_sentinel_not_character_movement`). Every
+# test below that constructs a `CharacterMovement` for each name in
+# `MOVEMENTS` needs to exercise the CONCRETE presets only.
+CONCRETE_MOVEMENTS = tuple(mv for mv in MOVEMENTS if mv != "auto")
+
 
 # --- presets -----------------------------------------------------------------
 
 
 def test_movements_tuple_contents() -> None:
-    assert MOVEMENTS == ("walk", "hop", "float", "dash", "gallop", "still")
+    assert MOVEMENTS == ("auto", "walk", "hop", "float", "dash", "gallop", "still")
+
+
+def test_auto_movement_is_config_sentinel_not_character_movement() -> None:
+    assert MOVEMENTS[0] == "auto"
+    with pytest.raises(ValueError, match="auto"):
+        CharacterMovement("auto", travel_width=TRAVEL_WIDTH)
 
 
 def test_bubble_effects_tuple_contents() -> None:
@@ -59,7 +72,7 @@ def test_validate_movement_rejects_unknown_name() -> None:
         validate_movement("teleport")
 
     assert str(exc_info.value) == (
-        "Unknown movement: teleport. Available: walk, hop, float, dash, gallop, still"
+        "Unknown movement: teleport. Available: auto, walk, hop, float, dash, gallop, still"
     )
 
 
@@ -92,7 +105,7 @@ def test_validate_message_style_rejects_unknown_name() -> None:
 # --- CharacterMovement: determinism -------------------------------------------
 
 
-@pytest.mark.parametrize("movement", MOVEMENTS)
+@pytest.mark.parametrize("movement", CONCRETE_MOVEMENTS)
 def test_step_sequence_is_deterministic_with_seeded_rng(movement: str) -> None:
     trace_a = _simulate(movement, seed=42, steps=500, dt=0.05)
     trace_b = _simulate(movement, seed=42, steps=500, dt=0.05)
@@ -113,7 +126,7 @@ def test_different_seeds_can_diverge(movement: str) -> None:
 # --- CharacterMovement: invariants (every movement) ---------------------------
 
 
-@pytest.mark.parametrize("movement", MOVEMENTS)
+@pytest.mark.parametrize("movement", CONCRETE_MOVEMENTS)
 def test_invariants_hold_across_many_steps(movement: str) -> None:
     rng = random.Random(7)
     m = CharacterMovement(movement, travel_width=TRAVEL_WIDTH, rng=rng)
@@ -146,7 +159,7 @@ def test_invariants_hold_across_many_steps(movement: str) -> None:
         prev_x = x
 
 
-@pytest.mark.parametrize("movement", MOVEMENTS)
+@pytest.mark.parametrize("movement", CONCRETE_MOVEMENTS)
 def test_invariants_hold_with_varying_dt(movement: str) -> None:
     # Robustness against irregular tick timing (e.g. a busy run loop).
     rng = random.Random(99)
@@ -169,7 +182,7 @@ def test_step_rejects_negative_dt() -> None:
 
 
 def test_zero_travel_width_does_not_crash() -> None:
-    for movement in MOVEMENTS:
+    for movement in CONCRETE_MOVEMENTS:
         m = CharacterMovement(movement, travel_width=0.0, rng=random.Random(5))
         for _ in range(50):
             x, y = m.step(0.05)
@@ -308,13 +321,13 @@ def test_still_facing_is_always_plus_one() -> None:
         assert m.facing == 1
 
 
-@pytest.mark.parametrize("movement", MOVEMENTS)
+@pytest.mark.parametrize("movement", CONCRETE_MOVEMENTS)
 def test_facing_starts_at_plus_one(movement: str) -> None:
     m = CharacterMovement(movement, travel_width=TRAVEL_WIDTH, rng=random.Random(3))
     assert m.facing == 1
 
 
-@pytest.mark.parametrize("movement", MOVEMENTS)
+@pytest.mark.parametrize("movement", CONCRETE_MOVEMENTS)
 def test_facing_is_always_plus_or_minus_one(movement: str) -> None:
     m = CharacterMovement(movement, travel_width=TRAVEL_WIDTH, rng=random.Random(6))
     for _ in range(500):
@@ -322,7 +335,7 @@ def test_facing_is_always_plus_or_minus_one(movement: str) -> None:
         assert m.facing in (1, -1)
 
 
-@pytest.mark.parametrize("movement", MOVEMENTS)
+@pytest.mark.parametrize("movement", CONCRETE_MOVEMENTS)
 def test_facing_matches_sign_of_horizontal_movement(movement: str) -> None:
     # A narrow travel width forces frequent edge bounces, exercising the
     # bounce case densely. Outside of a turn, `facing` (== sign of
@@ -652,7 +665,7 @@ def test_still_never_turns() -> None:
         assert not m.is_turning
 
 
-@pytest.mark.parametrize("movement", [mv for mv in MOVEMENTS if mv != "still"])
+@pytest.mark.parametrize("movement", [mv for mv in CONCRETE_MOVEMENTS if mv != "still"])
 def test_average_speed_is_preserved_within_five_percent_after_easing(
     movement: str,
 ) -> None:

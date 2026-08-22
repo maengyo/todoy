@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 import random
 
-MOVEMENTS: tuple[str, ...] = ("walk", "hop", "float", "dash", "gallop", "still")
+MOVEMENTS: tuple[str, ...] = ("auto", "walk", "hop", "float", "dash", "gallop", "still")
 BUBBLE_EFFECTS: tuple[str, ...] = ("pop", "fade", "slide", "shake", "none")
 MESSAGE_STYLES: tuple[str, ...] = ("bubble", "flag")
 
@@ -144,6 +144,8 @@ class CharacterMovement:
         travel_width: float,
         rng: random.Random | None = None,
     ) -> None:
+        if movement == "auto":
+            raise ValueError("CharacterMovement requires a concrete movement, not auto")
         self.movement = validate_movement(movement)
         self.travel_width = max(0.0, float(travel_width))
         self._rng = rng if rng is not None else random.Random()

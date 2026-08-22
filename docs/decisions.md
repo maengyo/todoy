@@ -54,6 +54,18 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M13 (follow-up) — 2026-08-22
+
+### Decisions
+
+- **Character personas (issue #17).** Every character has a Persona (zone/entrance/flourish/banner/default movement) in `display/overlay/personas.py`: water dwellers splash up from below the screen edge and dive-resurface when reminders fire; flyers cruise near the screen top (clearance derived from the real menu-bar height) with the message hanging below as a two-string banner; hoppers bounce in; spectral characters materialize with blinks; the rest walk in. Entrance/flourish curves are pure dt-driven state machines.
+- **movement="auto"** is the new default: resolves to the persona's natural preset in the CLI before OverlayOptions (never leaks downstream); explicit values win; old explicit configs unchanged.
+- **User-reported fixes:** the flag genuinely lagged/desynced on water characters — pop/slide entrance effects animated the window frame via Core Animation, fighting the 30fps ride-along ticks (flag style now uses alpha-only entrance); the bubble panel was compacted ~11% with smaller buttons.
+
+### Modifications from cross-review
+
+- A reminder firing during an entrance defers the flourish instead of dropping it; sky clearance uses NSScreen frame-vs-visibleFrame instead of a hardcoded 24px; banner strings spread from two feet; extra flag-tracking regressions (repeated fires, edge-clamped launches).
+
 ## M12 (follow-up) — 2026-08-22
 
 ### Decisions

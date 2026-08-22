@@ -77,6 +77,11 @@ class FakeOverlayOptions:
 
 
 @dataclass(frozen=True)
+class FakePersona:
+    movement: str
+
+
+@dataclass(frozen=True)
 class FakePanelActions:
     add: Callable[[str, str | None], str | None]
     set_done: Callable[[int], str | None]
@@ -123,7 +128,7 @@ class FakeOverlayBackend:
 
 def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
     animations = types.ModuleType("todoy.display.overlay.animations")
-    movements = ("walk", "hop", "float", "dash", "gallop", "still")
+    movements = ("auto", "walk", "hop", "float", "dash", "gallop", "still")
     bubble_effects = ("pop", "fade", "slide", "shake", "none")
     message_styles = ("bubble", "flag")
 
@@ -155,6 +160,32 @@ def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
     animations.validate_bubble_effect = validate_bubble_effect
     animations.validate_message_style = validate_message_style
     monkeypatch.setitem(sys.modules, "todoy.display.overlay.animations", animations)
+
+
+def install_fake_personas_module(
+    monkeypatch: pytest.MonkeyPatch,
+    movements: dict[str, str] | None = None,
+    events: list[str] | None = None,
+) -> list[str]:
+    personas = types.ModuleType("todoy.display.overlay.personas")
+    resolved_movements = {
+        "cat": "walk",
+        "robot": "walk",
+        "horse": "walk",
+    }
+    if movements is not None:
+        resolved_movements.update(movements)
+    calls: list[str] = []
+
+    def persona(character_name: str) -> FakePersona:
+        calls.append(character_name)
+        if events is not None:
+            events.append(f"persona:{character_name}")
+        return FakePersona(movement=resolved_movements.get(character_name, "walk"))
+
+    personas.persona = persona
+    monkeypatch.setitem(sys.modules, "todoy.display.overlay.personas", personas)
+    return calls
 
 
 def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,6 +230,7 @@ def install_fake_overlay_modules(
     exit_code: int = 0,
 ) -> FakeOverlayState:
     state = FakeOverlayState(exit_code=exit_code)
+    install_fake_personas_module(monkeypatch)
 
     core = types.ModuleType("todoy.display.overlay.core")
 
@@ -1806,6 +1838,59 @@ def test_overlay_accepts_gallop_movement_flag(
     assert not data_file.exists()
 
 
+def test_overlay_auto_movement_resolves_persona_before_overlay_options(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    events: list[str] = []
+    persona_calls = install_fake_personas_module(
+        monkeypatch,
+        movements={"robot": "float"},
+        events=events,
+    )
+    base_module = sys.modules["todoy.display.overlay.base"]
+
+    def overlay_options(
+        *,
+        character: FakeCharacter,
+        character_image: Path | None,
+        language: str,
+        test_seconds: float | None,
+        movement: str,
+        bubble_effect: str,
+        message_style: str,
+    ) -> FakeOverlayOptions:
+        events.append(f"options:{movement}")
+        assert events == ["persona:robot", "options:float"]
+        assert movement != "auto"
+        return FakeOverlayOptions(
+            character=character,
+            character_image=character_image,
+            language=language,
+            test_seconds=test_seconds,
+            movement=movement,
+            bubble_effect=bubble_effect,
+            message_style=message_style,
+        )
+
+    base_module.OverlayOptions = overlay_options
+
+    exit_code = main(["overlay", "--character", "robot", "--movement", "auto"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert persona_calls == ["robot"]
+    assert state.options is not None
+    assert state.options.movement == "float"
+    assert not data_file.exists()
+
+
 def test_overlay_character_flag_overrides_config_and_wires_real_character(
     data_file: Path,
     config_file: Path,
@@ -1880,7 +1965,7 @@ def test_overlay_rejects_invalid_cli_message_style_choice(
     [
         (
             '[display]\nmovement = "crawl\\u001b]0;x\\u0007"\n',
-            "Unknown movement: crawl]0;x. Available: walk, hop, float, dash, gallop, still\n",
+            "Unknown movement: crawl]0;x. Available: auto, walk, hop, float, dash, gallop, still\n",
         ),
         (
             '[display]\nbubble_effect = "burst\\u001b]0;x\\u0007"\n',
@@ -1917,6 +2002,7 @@ def test_overlay_rejects_invalid_config_animation_value_with_sanitized_stderr(
 
 
 animations_spec = find_spec("todoy.display.overlay.animations")
+personas_spec = find_spec("todoy.display.overlay.personas")
 
 
 def _real_message_style_validator_available() -> bool:
@@ -1947,3 +2033,14 @@ def test_real_overlay_message_style_validator_rejects_bad_input() -> None:
 
     with pytest.raises(ValueError, match="^Unknown message style: scroll\\. Available:"):
         animations.validate_message_style("scroll")
+
+
+@pytest.mark.skipif(personas_spec is None, reason="todoy.display.overlay.personas unavailable")
+def test_real_overlay_personas_return_concrete_movement() -> None:
+    from todoy.display.overlay import personas
+    from todoy.display.overlay.animations import MOVEMENTS
+
+    movement = personas.persona("cat").movement
+
+    assert movement in MOVEMENTS
+    assert movement != "auto"
