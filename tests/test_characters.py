@@ -81,8 +81,47 @@ def test_new_character_is_resolvable_via_get_character(name: str) -> None:
     assert character.emoji == NEW_CHARACTER_EMOJI[name]
 
 
+M12_CHARACTER_EMOJI = {
+    "fox": "🦊",
+    "panda": "🐼",
+    "chick": "🐥",
+    "rabbit": "🐰",
+    "hamster": "🐹",
+    "duck": "🦆",
+    "whale": "🐳",
+    "octopus": "🐙",
+    "butterfly": "🦋",
+    "dragon": "🐉",
+}
+
+
+@pytest.mark.parametrize(("name", "emoji"), list(M12_CHARACTER_EMOJI.items()))
+def test_m12_character_is_registered_with_expected_emoji(name: str, emoji: str) -> None:
+    assert name in CHARACTERS
+    assert CHARACTERS[name].emoji == emoji
+
+
+@pytest.mark.parametrize("name", list(M12_CHARACTER_EMOJI))
+def test_m12_character_is_resolvable_via_get_character(name: str) -> None:
+    character = get_character(name)
+    assert character.name == name
+    assert character.emoji == M12_CHARACTER_EMOJI[name]
+
+
+def test_characters_has_at_least_twenty_five_entries() -> None:
+    assert len(CHARACTERS) >= 25
+
+
 def test_all_expected_names_present() -> None:
-    expected = {"cat", "dog", "ghost", "robot", "horse", *NEW_CHARACTER_EMOJI}
+    expected = {
+        "cat",
+        "dog",
+        "ghost",
+        "robot",
+        "horse",
+        *NEW_CHARACTER_EMOJI,
+        *M12_CHARACTER_EMOJI,
+    }
     assert expected == set(CHARACTERS)
 
 
@@ -91,8 +130,10 @@ def test_get_character_returns_character_dataclass_instance() -> None:
 
 
 def test_get_character_unknown_name_raises_value_error_listing_available() -> None:
-    with pytest.raises(ValueError, match=r"Unknown character: dragon\. Available: .*cat.*") as exc:
-        get_character("dragon")
+    with pytest.raises(
+        ValueError, match=r"Unknown character: not-a-real-character\. Available: .*cat.*"
+    ) as exc:
+        get_character("not-a-real-character")
 
     message = str(exc.value)
     for name in CHARACTERS:

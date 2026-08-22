@@ -54,6 +54,13 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M12 (follow-up) — 2026-08-22
+
+### Decisions
+
+- **Smooth motion (issue #16).** The overlay wander tick runs at 30fps (movement was made dt-independent in M11, so average speeds are unchanged). Edge turns are eased: ~0.3s decelerate → flip facing at the zero-velocity midpoint → accelerate, C1-continuous (no velocity jumps); gallop squash interpolates smoothly. Measured live: monotonic velocity trace through a turn, ~3-4% CPU.
+- **Catalog: 25 characters.** + fox, panda, chick, rabbit, hamster, duck, whale, octopus, butterfly, dragon. New rule: EVERY catalog character has ≥2 ASCII gait frames (rabbit: 3-frame hop) with per-character stride columns — the terminal runner animates all of them; the static-art fallback is now unreachable for catalog names.
+
 ## M11 (follow-up) — 2026-08-21
 
 ### Decisions

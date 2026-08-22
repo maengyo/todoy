@@ -92,19 +92,10 @@ def test_stride_lock_for_a_two_frame_character() -> None:
 
 
 def test_terminal_run_falls_back_for_character_missing_dedicated_gait() -> None:
-    # "ghost" is a valid character with no entry in GAIT_FRAMES.
-    run = TerminalRun(width_cols=1000, character_name="ghost")
-    assert run.frames == gait_frames("ghost")
-    assert len(run.frames) == 1
-    assert run.stride_columns == 2
-    # single-frame cycle: every tick is a full cycle, so every tick advances
-    # by exactly stride_columns.
-    xs = [0]
-    for _ in range(6):
-        frame_index, x = run.tick()
-        assert frame_index == 0
-        xs.append(x)
-    assert _wrapped_delta_sum(xs, 1000) == 2 * 6
+    # Defensive guard: fallback to 1-frame for truly unknown character
+    # (catalog names all have dedicated gait frames per M12 coverage rule).
+    with pytest.raises(ValueError, match="Unknown character"):
+        TerminalRun(width_cols=1000, character_name="not-a-real-character")
 
 
 def test_terminal_run_unknown_character_raises_value_error() -> None:

@@ -91,6 +91,16 @@ def _gallop_segment(phase: float) -> tuple[float, bool]:
 
 MAX_Y_OFFSET_PX = 40.0
 
+# Eased edge turns (M12 Task 29): instead of reversing direction the instant
+# `x` hits a travel-range boundary, `_patrol` pre-triggers a turn phase this
+# many seconds before the edge so a cosine-shaped deceleration reaches
+# exactly `x == 0` / `x == travel_width` at the turn's zero-velocity
+# midpoint, then a mirror-image acceleration carries the character back into
+# the range in the new direction. See `_patrol`/`_begin_turn`/`_advance_turn`
+# for the mechanics; the shape guarantees velocity (direction * speed) never
+# jumps (C1-continuous) and `x` never leaves `[0, travel_width]`.
+TURN_DURATION_SECONDS = 0.3  # contract: ~0.25-0.35s
+
 
 def validate_movement(name: str) -> str:
     """Return `name` unchanged if it is a known movement, else raise ValueError."""
@@ -149,6 +159,18 @@ class CharacterMovement:
         self._dash_state = "pause"
         self._dash_timer = self._rng.uniform(*DASH_PAUSE_RANGE_SECONDS)
 
+        # Eased edge turns (Task 29) -- see `_patrol`/`_begin_turn`.
+        self._turning = False
+        self._turn_elapsed = 0.0
+        self._turn_duration = 0.0
+        # Multiplier in [0, 1] applied to whatever *live* speed `_advance_turn`
+        # is fed each call (Codex review follow-up, Major 2): normally 1.0
+        # (full nominal speed), reduced only when a narrow `travel_width`
+        # left less room than the nominal ease distance at trigger time, so
+        # the fixed-duration turn still lands on the edge without overshoot.
+        self._turn_scale = 1.0
+        self._turn_pre_direction = 1.0
+
         if self.movement == "still":
             self.x = self.travel_width / 2.0
 
@@ -176,21 +198,164 @@ class CharacterMovement:
         it stays at the +1 `direction` is initialized to, per contract."""
         return 1 if self.direction >= 0.0 else -1
 
+    @property
+    def is_turning(self) -> bool:
+        """True while an eased edge-turn (Task 29) is in progress. Exposed
+        mainly for tests that need to exempt the turn window from
+        steady-state assumptions (e.g. "dx sign always matches facing" --
+        no longer true for the one `step()` call whose dt straddles the
+        turn's zero-velocity midpoint)."""
+        return self._turning
+
     # --- shared helpers ------------------------------------------------------
 
     def _patrol(self, dt: float, speed: float) -> None:
-        """Move `self.x` by `direction * speed * dt`, bouncing at both edges."""
+        """Move `self.x` by `direction * speed * dt`, easing smoothly through
+        a `TURN_DURATION_SECONDS`-long turn at each edge instead of bouncing
+        instantly (Task 29). The turn is *pre-triggered*: steady motion stops
+        early enough that a cosine-shaped deceleration reaches exactly
+        `x == 0` or `x == travel_width` at the turn's zero-velocity midpoint,
+        then a mirror-image acceleration carries the character back into the
+        travel range in the new direction -- so `x` never leaves
+        `[0, travel_width]` and velocity is continuous throughout (no jumps).
+
+        `speed` is treated as the *live* nominal speed for this call --
+        `_step_gallop` calls this piecewise with a different speed per
+        beat/gap/rest segment, and that segment speed keeps driving the
+        turn's amplitude even mid-turn (Codex review follow-up, Major 2), so
+        stride-sync's airborne/ground dx proportions hold through a turn
+        just like they do outside of one.
+        """
         if self.travel_width <= 0.0:
             self.x = 0.0
+            self._turning = False
+            return
+        if speed <= 0.0:
             return
 
-        self.x += self.direction * speed * dt
-        if self.x <= 0.0:
-            self.x = 0.0
-            self.direction = 1.0
-        elif self.x >= self.travel_width:
-            self.x = self.travel_width
-            self.direction = -1.0
+        remaining = dt
+        iterations = 0
+        while remaining > 1e-12 and iterations < 10_000:
+            iterations += 1
+            if self._turning:
+                remaining = self._advance_turn(remaining, speed)
+                continue
+
+            # Distance still available before steady motion must give way to
+            # the eased turn (so the turn's own decel distance lands exactly
+            # on the edge; see `_begin_turn`).
+            trigger_distance = speed * TURN_DURATION_SECONDS / math.pi
+            room = self.travel_width - self.x if self.direction > 0.0 else self.x
+            edge_room = max(0.0, room - trigger_distance)
+
+            if edge_room <= 1e-9:
+                self._begin_turn(speed)
+                continue
+
+            time_to_trigger = edge_room / speed
+            step = min(remaining, time_to_trigger)
+            self.x += self.direction * speed * step
+            remaining -= step
+
+        if remaining > 1e-9:
+            # Adversarial dt/travel_width combo exhausted the iteration cap
+            # (Codex review follow-up, Minor 4) -- never silently drop the
+            # remainder. A turn still in progress always finishes in one
+            # more step regardless of how large `remaining` is (its duration
+            # is bounded by `TURN_DURATION_SECONDS`), so finish that first;
+            # whatever's left after is spent as plain motion at the current
+            # speed so `step()`'s dt is always fully consumed.
+            if self._turning:
+                remaining = self._advance_turn(remaining, speed)
+            if remaining > 1e-9:
+                self.x += self.direction * speed * remaining
+                self.x = min(self.travel_width, max(0.0, self.x))
+
+    def _advance_active_turn(self, dt: float, speed: float) -> None:
+        """Advance an in-progress turn by `dt`, using `speed` as the live
+        amplitude reference -- regardless of whatever gating the caller
+        applies to *starting* new steady motion (e.g. `dash`'s pause state,
+        which never calls `_patrol` at all while paused). A turn already
+        under way must still finish on schedule: freezing it mid-ease would
+        strand `x`/`direction` mid-turn and violate the turn-duration/
+        C1-continuity contract the instant the pause ends and motion resumes
+        elsewhere (Codex review follow-up, Major 1). No-op if no turn is
+        currently in progress."""
+        remaining = dt
+        iterations = 0
+        while self._turning and remaining > 1e-12 and iterations < 10_000:
+            iterations += 1
+            remaining = self._advance_turn(remaining, speed)
+
+    def _begin_turn(self, speed: float) -> None:
+        """Start an eased turn. `TURN_DURATION_SECONDS` (the contract's
+        ~0.25-0.35s) is always honored -- even at a narrow `travel_width`
+        where less room than the nominal ease distance (`speed *
+        TURN_DURATION_SECONDS / pi`) remains ahead. In that case it's the
+        turn's *amplitude* that's scaled down (via `_turn_scale`), not its
+        duration, so the same-duration cosine profile's decel distance still
+        fits in the room actually available -- `x` never overshoots the edge
+        (Codex review follow-up, Minor 3). A small velocity step at
+        turn-onset is the accepted trade-off in that narrow-width-only
+        corner case (real screen widths never come close to triggering it)."""
+        room_left = self.travel_width - self.x if self.direction > 0.0 else self.x
+        room_left = max(0.0, room_left)
+        nominal_distance = speed * TURN_DURATION_SECONDS / math.pi
+        scale = min(1.0, room_left / nominal_distance)
+
+        self._turn_pre_direction = self.direction
+        self._turn_elapsed = 0.0
+        self._turn_duration = TURN_DURATION_SECONDS
+        self._turn_scale = scale
+
+        if scale <= 1e-9:
+            # No room at all to ease into (degenerate travel_width) -- flip
+            # in place; there's nothing to animate.
+            self.direction = -self.direction
+            self._turning = False
+            return
+        self._turning = True
+
+    def _advance_turn(self, remaining: float, speed: float) -> float:
+        """Advance the in-progress turn by up to `remaining` seconds
+        (finishing it early if `remaining` covers the rest of it). The
+        velocity profile is `speed * _turn_scale * cos(pi * t /
+        turn_duration)` for `t` in `[0, turn_duration]`, relative to the
+        direction the character was heading when the turn began: it
+        decelerates from `+speed * _turn_scale` through 0 at the midpoint,
+        then accelerates to `-speed * _turn_scale` (i.e. that amplitude, in
+        the new direction). `speed` is read fresh on every call rather than
+        captured once at turn-start, so a caller like `_step_gallop` that
+        varies its per-segment speed keeps driving the turn's amplitude
+        through the whole ease, not just at its start (Major 2). `direction`
+        (and so `facing`) flips the instant elapsed time crosses the
+        midpoint -- exactly where velocity is zero. Returns the leftover,
+        unconsumed `remaining`."""
+        time_left = self._turn_duration - self._turn_elapsed
+        step = min(remaining, time_left)
+
+        t0 = self._turn_elapsed
+        t1 = t0 + step
+        omega = math.pi / self._turn_duration
+        amplitude = speed * self._turn_scale
+        # integral of amplitude * cos(omega * t) dt from t0 to t1
+        dx = (amplitude / omega) * (math.sin(omega * t1) - math.sin(omega * t0))
+        self.x += self._turn_pre_direction * dx
+        # Not just fp safety: a live `speed` that differs from the one that
+        # triggered the turn (gallop's segment speed can change mid-turn)
+        # means the decel distance may no longer land exactly on the edge --
+        # this is the backstop that keeps `x` in bounds regardless.
+        self.x = min(self.travel_width, max(0.0, self.x))
+
+        midpoint = self._turn_duration / 2.0
+        if t0 < midpoint <= t1:
+            self.direction = -self._turn_pre_direction
+
+        self._turn_elapsed = t1
+        if self._turn_elapsed >= self._turn_duration - 1e-9:
+            self._turning = False
+
+        return remaining - step
 
     # --- presets ---------------------------------------------------------------
 
@@ -231,6 +396,11 @@ class CharacterMovement:
     def _step_dash(self, dt: float) -> tuple[float, float]:
         if self._dash_state == "burst":
             self._patrol(dt, DASH_BURST_SPEED_PX_PER_SEC)
+        else:
+            # Paused: no *new* movement should start, but a turn triggered
+            # during the burst that just ended must still finish -- see
+            # `_advance_active_turn` (Codex review follow-up, Major 1).
+            self._advance_active_turn(dt, DASH_BURST_SPEED_PX_PER_SEC)
 
         self._dash_timer -= dt
         if self._dash_timer <= 0.0:

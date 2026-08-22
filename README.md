@@ -139,8 +139,10 @@ $ todoy tui
 
 - `todoy tui --brief` prints a single line — drop it in your `.zshrc` / `.bashrc`
   to get nagged by every new terminal: `🐱 3 todos: buy milk (+2 more)`
-- 15 characters to choose from: cat (default), dog, ghost, robot, horse,
-  turtle, snail, penguin, frog, bee, owl, unicorn, dino, alien, crab —
+- 25 characters to choose from: cat (default), dog, ghost, robot, horse,
+  turtle, snail, penguin, frog, bee, owl, unicorn, dino, alien, crab, fox,
+  panda, chick, rabbit, hamster, duck, whale, octopus, butterfly, dragon —
+  every one with its own ASCII gait cycle for the terminal runner.
   `--character NAME`, `--lang en|ko`, `--ascii` for emoji-free terminals.
 - Messages tease your todos, never you. The character reminds — finishing them is still your job.
 

@@ -536,7 +536,7 @@ def test_init_wizard_writes_custom_display_settings(
 def test_init_wizard_invalid_character_reprompts_once_then_defaults(
     config_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    fake_input = FakeInput(["n", "", "dragon", "koala", ""])
+    fake_input = FakeInput(["n", "", "not-a-real-character", "koala", ""])
     monkeypatch.setattr("builtins.input", fake_input)
 
     exit_code = main(["init"])

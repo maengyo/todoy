@@ -9,13 +9,17 @@ from todoy.display.overlay.animations import (
     BUBBLE_EFFECTS,
     DASH_BURST_SPEED_PX_PER_SEC,
     FLOAT_BOB_AMPLITUDE_PX,
+    FLOAT_SPEED_PX_PER_SEC,
     GALLOP_AIRBORNE_SPEED_PX_PER_SEC,
     GALLOP_CYCLE_SECONDS,
+    GALLOP_GROUND_SPEED_PX_PER_SEC,
     GALLOP_HOP_PEAK_HEIGHT_PX,
     GALLOP_SPEED_PX_PER_SEC,
     HOP_PEAK_HEIGHT_PX,
+    HOP_SPEED_PX_PER_SEC,
     MESSAGE_STYLES,
     MOVEMENTS,
+    TURN_DURATION_SECONDS,
     WALK_SPEED_PX_PER_SEC,
     CharacterMovement,
     validate_bubble_effect,
@@ -230,11 +234,19 @@ def test_dash_alternates_pause_and_burst() -> None:
 def test_walk_bounces_at_both_edges() -> None:
     # A narrow travel width forces multiple bounces quickly, so we can see
     # the direction reverse without simulating forever.
+    #
+    # Since Task 29, a bounce is an eased turn (~0.3s cosine decel/accel)
+    # rather than an instant reversal, and its zero-velocity midpoint --
+    # where x actually touches the edge -- generally falls *between* this
+    # test's fixed dt=0.05 samples rather than exactly on one of them. The
+    # tolerance below (empirically, samples land within ~0.002px of an edge
+    # for this seed/width) is generous slack for that grid-vs-continuous-
+    # curve misalignment, not a loosened correctness bar.
     m = CharacterMovement("walk", travel_width=10.0, rng=random.Random(1))
     xs = [m.step(0.05)[0] for _ in range(400)]
 
-    assert any(x <= 0.0 + 1e-6 for x in xs)
-    assert any(x >= 10.0 - 1e-6 for x in xs)
+    assert any(x <= 0.0 + 0.05 for x in xs)
+    assert any(x >= 10.0 - 0.05 for x in xs)
 
 
 def test_gallop_is_noticeably_faster_than_walk() -> None:
@@ -313,61 +325,77 @@ def test_facing_is_always_plus_or_minus_one(movement: str) -> None:
 @pytest.mark.parametrize("movement", MOVEMENTS)
 def test_facing_matches_sign_of_horizontal_movement(movement: str) -> None:
     # A narrow travel width forces frequent edge bounces, exercising the
-    # bounce case densely. `_patrol` flips `direction` (and so `facing`) the
-    # instant it clamps to a boundary -- i.e. *before* the next step's
-    # displacement happens in the new direction -- so the one tick that lands
-    # exactly on a boundary is exempted: its displacement was still made in
-    # the *old* direction, while `facing` (queried after `step()` returns)
-    # already reports the new one the character is about to turn to.
+    # bounce case densely. Outside of a turn, `facing` (== sign of
+    # `direction`) must always agree with the direction `x` is actually
+    # moving.
     #
-    # `dt` is kept well below gallop's finest internal segment (the 0.03s
-    # gap) so a single `step(dt)` call can't itself straddle a bounce *and*
-    # the recovery leg on the other side (gallop's stride-sync integrates
-    # patrol piecewise across its beat/gap/rest segments, so a coarser dt
-    # could otherwise contain more than one direction change).
+    # Since Task 29 a bounce eases through a ~0.3s turn instead of
+    # reversing instantly, and `direction` (and so `facing`) flips at the
+    # turn's zero-velocity midpoint, which can fall *inside* a single
+    # `step(dt)` call rather than exactly at its start or end -- that one
+    # call's net `dx` can then reflect a mix of old- and new-direction
+    # motion while `facing` (queried after `step()` returns) already
+    # reports the post-flip direction. `is_turning` (before and after the
+    # step) is used to exempt exactly those straddling calls; every other
+    # sample -- i.e. every call fully inside one steady-motion leg -- must
+    # still match exactly.
     rng = random.Random(21)
     m = CharacterMovement(movement, travel_width=30.0, rng=rng)
     dt = 0.005
     prev_x, _ = m.step(dt)
-    saw_positive = False
-    saw_negative = False
+    min_x, max_x = prev_x, prev_x
     for _ in range(30_000):
+        turning_before = m.is_turning
         x, _ = m.step(dt)
+        turning_after = m.is_turning
         dx = x - prev_x
-        at_boundary = x <= 1e-6 or x >= 30.0 - 1e-6
-        if not at_boundary:
+        if not turning_before and not turning_after:
             if dx > 1e-9:
                 assert m.facing == 1
-                saw_positive = True
             elif dx < -1e-9:
                 assert m.facing == -1
-                saw_negative = True
         prev_x = x
+        min_x, max_x = min(min_x, x), max(max_x, x)
 
     if movement != "still":
-        # sanity: the narrow travel width should have produced movement in
-        # both directions for every non-still preset (bounces guarantee it).
-        assert saw_positive or saw_negative
+        # sanity: the narrow travel width, some fast presets' eased-turn
+        # zones (Task 29) now cover most of it (e.g. dash's burst speed
+        # makes its steady, non-turning leg vanish at this width -- see the
+        # M12 Task 29 report), so this checks the *range of x actually
+        # visited* rather than sampling dx sign in the (possibly empty)
+        # non-turning window: both edges' neighborhoods were reached.
+        assert min_x < 5.0
+        assert max_x > 25.0
 
 
-def test_facing_flips_immediately_after_an_edge_bounce() -> None:
+def test_facing_flips_at_turn_midpoint_near_the_edge() -> None:
+    # Since Task 29 a bounce is an eased ~0.3s turn, not an instant reversal
+    # -- `facing` flips at the turn's zero-velocity midpoint, which this
+    # test locates via `is_turning` (rather than waiting for `x` to reach
+    # the edge exactly, which a fixed dt generally won't land on -- see
+    # `test_walk_bounces_at_both_edges`). At the flip, `x` should already
+    # be close to the edge it's turning at (within the turn's own ease
+    # distance for this speed/duration, ~4.3px for walk).
     m = CharacterMovement("walk", travel_width=10.0, rng=random.Random(1))
     assert m.facing == 1
+    dt = 0.005
 
-    x = m.step(0.0)[0]
-    for _ in range(200):
-        x, _ = m.step(0.05)
-        if x >= 10.0 - 1e-9:
-            break
-    assert x >= 10.0 - 1e-9
+    def run_until_flip() -> float:
+        prev_facing = m.facing
+        for _ in range(2000):
+            x, _ = m.step(dt)
+            if m.facing != prev_facing:
+                assert m.is_turning  # flip happens mid-turn, not at a clamp
+                return x
+        raise AssertionError("facing never flipped")
+
+    x_at_first_flip = run_until_flip()
     assert m.facing == -1  # about to head back left
+    assert x_at_first_flip >= 10.0 - 5.0  # near the right edge, not mid-travel
 
-    for _ in range(200):
-        x, _ = m.step(0.05)
-        if x <= 0.0 + 1e-9:
-            break
-    assert x <= 0.0 + 1e-9
+    x_at_second_flip = run_until_flip()
     assert m.facing == 1  # about to head back right
+    assert x_at_second_flip <= 0.0 + 5.0  # near the left edge
 
 
 # --- CharacterMovement: gallop stride-sync (M11 Task 28) -----------------------
@@ -480,3 +508,319 @@ def _simulate(movement: str, *, seed: int, steps: int, dt: float) -> list[tuple[
     rng = random.Random(seed)
     m = CharacterMovement(movement, travel_width=TRAVEL_WIDTH, rng=rng)
     return [m.step(dt) for _ in range(steps)]
+
+
+# --- CharacterMovement: eased edge turns (M12 Task 29) -------------------------
+
+
+def _velocities_through_first_turn(
+    movement: str, *, travel_width: float, dt: float, seed: int = 1, max_steps: int = 20_000
+) -> tuple[list[float], list[bool]]:
+    """Simulate `movement` until (and through) its first `is_turning` window,
+    sampling `dx/dt` every step. Returns `(velocities, is_turning_flags)`
+    covering the turn itself plus one context sample before it starts and
+    one after it ends -- `is_turning_flags` lets callers tell those two
+    context samples apart from the turn's own samples (e.g. `dash` can
+    legitimately go flat the instant a turn completes if it's paused --
+    that's its own accepted bursty gait resuming, not the turn itself being
+    non-smooth; see `test_turn_velocity_decelerates_then_accelerates_with_
+    no_jumps`)."""
+    m = CharacterMovement(movement, travel_width=travel_width, rng=random.Random(seed))
+    prev_x, _ = m.step(0.0)
+    velocities: list[float] = []
+    turning: list[bool] = []
+    for _ in range(max_steps):
+        x, _ = m.step(dt)
+        velocities.append((x - prev_x) / dt)
+        turning.append(m.is_turning)
+        prev_x = x
+        if len(turning) > 1 and turning[-2] and not turning[-1]:
+            break  # just finished the first turn
+    else:
+        raise AssertionError("never observed a full turn within max_steps")
+
+    start = turning.index(True)
+    end = len(turning) - 1  # last False, right after the turn ended
+    window = slice(max(0, start - 1), end + 1)
+    return velocities[window], turning[window]
+
+
+@pytest.mark.parametrize(
+    ("movement", "speed", "travel_width", "max_steps"),
+    [
+        ("walk", WALK_SPEED_PX_PER_SEC, 200.0, 20_000),
+        ("hop", HOP_SPEED_PX_PER_SEC, 200.0, 20_000),
+        ("float", FLOAT_SPEED_PX_PER_SEC, 200.0, 20_000),
+        ("gallop", GALLOP_AIRBORNE_SPEED_PX_PER_SEC, 200.0, 20_000),
+        # dash spends most of its time paused between bursts (Codex review
+        # follow-up, Minor 5 -- this preset would have caught Major 1: a
+        # turn triggered near the end of a burst that freezes the instant
+        # `_dash_state` flips to "pause"). A narrower width and more steps
+        # than the other presets reliably finds a burst that reaches the
+        # edge within `max_steps`.
+        ("dash", DASH_BURST_SPEED_PX_PER_SEC, 100.0, 200_000),
+    ],
+)
+def test_turn_velocity_decelerates_then_accelerates_with_no_jumps(
+    movement: str, speed: float, travel_width: float, max_steps: int
+) -> None:
+    # The contract's core smoothness claim: across an edge turn, horizontal
+    # velocity (dx/dt) decelerates to zero and accelerates back out in the
+    # new direction -- monotonically on each side, with no discontinuous
+    # jump anywhere (each step's speed changes by only a small, bounded
+    # amount -- never more than a full swing from the preset's nominal
+    # speed to its negation, which is what an *instant* bounce would do).
+    # This holds no matter what a preset is doing around the turn -- e.g.
+    # dash pausing partway through one (Major 1).
+    dt = 0.001
+    velocities, turning_flags = _velocities_through_first_turn(
+        movement, travel_width=travel_width, dt=dt, max_steps=max_steps
+    )
+
+    assert len(velocities) > 10  # actually sampled the eased turn, not a snap
+
+    # No step-to-step jump anywhere close to an instant reversal (2x speed).
+    max_step_delta = max(abs(b - a) for a, b in zip(velocities, velocities[1:], strict=False))
+    assert max_step_delta < speed  # well under a full +speed -> -speed snap
+
+    # Never exceeds the preset's own nominal speed (the ease is a scale-down
+    # of it, never an overshoot).
+    assert max(abs(v) for v in velocities) <= speed + 1e-6
+
+    # Sign flips exactly once, and each side is monotonic in magnitude:
+    # decelerating while still in the old direction, then accelerating in
+    # the new one. Restricted to samples strictly *inside* the turn --
+    # excludes the one lead-in and one trail-out context sample the helper
+    # includes, since a preset with its own start/stop gait (dash's burst/
+    # pause) can legitimately go instantly flat right as the turn ends if
+    # it's paused at that instant; that's dash's own accepted jerkiness
+    # resuming, not the turn itself failing to be smooth.
+    in_turn = [v for v, t in zip(velocities, turning_flags, strict=True) if t]
+    assert len(in_turn) > 10
+
+    signs = [1 if v > 1e-9 else (-1 if v < -1e-9 else 0) for v in in_turn]
+    nonzero_signs = [s for s in signs if s != 0]
+    sign_changes = sum(1 for a, b in zip(nonzero_signs, nonzero_signs[1:], strict=False) if a != b)
+    assert sign_changes == 1
+
+    flip_index = next(i for i, s in enumerate(signs) if s != signs[0] and s != 0)
+    decel_leg = [abs(v) for v in in_turn[:flip_index]]
+    accel_leg = [abs(v) for v in in_turn[flip_index:]]
+    assert decel_leg == sorted(decel_leg, reverse=True)
+    assert accel_leg == sorted(accel_leg)
+
+
+def test_turn_duration_is_within_the_contract_range() -> None:
+    # ~0.25-0.35s per the contract, when there's ample room to ease into (no
+    # narrow-travel_width clamping -- see `_begin_turn`).
+    dt = 0.0005
+    velocities, _turning = _velocities_through_first_turn("walk", travel_width=400.0, dt=dt)
+    turn_duration = len(velocities) * dt
+    assert 0.2 <= turn_duration <= 0.4
+
+
+def test_facing_flips_exactly_at_the_zero_velocity_sample() -> None:
+    # The step where `facing` changes should be the one with the smallest
+    # |velocity| in the whole turn -- i.e. right at the cosine profile's
+    # zero crossing, not somewhere else in the ease.
+    dt = 0.001
+    m = CharacterMovement("walk", travel_width=100.0, rng=random.Random(1))
+    prev_x, _ = m.step(0.0)
+    prev_facing = m.facing
+    velocities: list[float] = []
+    flip_offset: int | None = None
+    for _ in range(4000):
+        x, _ = m.step(dt)
+        velocities.append((x - prev_x) / dt)
+        if m.facing != prev_facing:
+            flip_offset = len(velocities) - 1
+            prev_facing = m.facing
+        prev_x = x
+        if flip_offset is not None:
+            break
+
+    assert flip_offset is not None
+    window = velocities[max(0, flip_offset - 20) : flip_offset + 21]
+    closest_to_zero = min(range(len(window)), key=lambda i: abs(window[i]))
+    assert window[closest_to_zero] == velocities[flip_offset]
+
+
+def test_still_never_turns() -> None:
+    m = CharacterMovement("still", travel_width=TRAVEL_WIDTH)
+    for _ in range(200):
+        m.step(0.05)
+        assert not m.is_turning
+
+
+@pytest.mark.parametrize("movement", [mv for mv in MOVEMENTS if mv != "still"])
+def test_average_speed_is_preserved_within_five_percent_after_easing(
+    movement: str,
+) -> None:
+    # Contract: per-preset average speed over long runs must stay within
+    # +/-5% of what it was before eased turns existed -- i.e. before, a
+    # bounce cost zero time; now it costs ~TURN_DURATION_SECONDS of net-zero
+    # progress. Compare a huge travel_width (effectively bounce-free -- the
+    # pre-Task-29 baseline) against a realistic screen-sized one (frequent
+    # bounces, eased turns and all) using cumulative absolute displacement
+    # over a long, fixed wall-clock run.
+    dt = 0.02
+    total_time = 120.0
+    steps = round(total_time / dt)
+
+    def average_abs_speed(travel_width: float) -> float:
+        m = CharacterMovement(movement, travel_width=travel_width, rng=random.Random(1))
+        prev_x, _ = m.step(0.0)
+        total_abs_dx = 0.0
+        for _ in range(steps):
+            x, _ = m.step(dt)
+            total_abs_dx += abs(x - prev_x)
+            prev_x = x
+        return total_abs_dx / (steps * dt)
+
+    bounce_free = average_abs_speed(100_000.0)
+    realistic = average_abs_speed(1300.0)  # ~a laptop screen's travel width
+
+    assert realistic == pytest.approx(bounce_free, rel=0.05)
+
+
+def test_turn_duration_constant_matches_the_contract_range() -> None:
+    assert 0.25 <= TURN_DURATION_SECONDS <= 0.35
+
+
+# --- CharacterMovement: eased edge turns, Codex review follow-up ---------------
+
+
+def test_dash_turn_completes_through_a_pause_window() -> None:
+    # Regression (Codex review, Major 1): a turn already in progress used to
+    # freeze the instant `_dash_state` flipped to "pause" mid-turn -- `x`
+    # and `direction` got stuck there forever (is_turning never cleared),
+    # since `_step_dash` only ever advanced `_patrol` while bursting.
+    # Force the exact scenario deterministically: start a turn, then flip
+    # dash to "pause" (as its RNG-driven burst timer would mid-turn) and
+    # confirm the turn still runs to completion under `step()`.
+    m = CharacterMovement("dash", travel_width=1000.0, rng=random.Random(1))
+    m._dash_state = "burst"
+    m._begin_turn(DASH_BURST_SPEED_PX_PER_SEC)
+    assert m.is_turning
+    x_at_turn_start = m.x
+
+    # Simulate the burst ending right as the turn began: pause, with a long
+    # timer so the pause itself doesn't end mid-test.
+    m._dash_state = "pause"
+    m._dash_timer = 1000.0
+
+    dt = 0.001
+    saw_motion = False
+    for _ in range(1000):  # 1s -- comfortably more than TURN_DURATION_SECONDS
+        prev_x = m.x
+        m.step(dt)
+        if m.x != prev_x:
+            saw_motion = True
+        if not m.is_turning:
+            break
+
+    assert not m.is_turning  # the turn actually finished, not stuck forever
+    assert saw_motion  # and it moved while doing so, not frozen in place
+    assert m.x != x_at_turn_start  # ended up somewhere past where it began
+    assert m._dash_state == "pause"  # normal pause/burst gating resumed after
+
+
+def test_advance_turn_uses_the_live_speed_argument_not_a_captured_one() -> None:
+    # Regression (Codex review, Major 2): `_advance_turn` used to close over
+    # the speed captured once at `_begin_turn` time, so gallop's stride-sync
+    # speed (airborne vs. ground) got frozen at whatever it was when the
+    # turn began instead of continuing to alternate through the turn.
+    #
+    # Verify directly at the same turn-local instant (elapsed=0, so the same
+    # `_turn_scale` from identical trigger conditions): different *live*
+    # speeds passed to `_advance_turn` must produce proportionally different
+    # displacement -- if the speed were captured instead of live, both calls
+    # would produce identical dx regardless of what's passed in.
+    m_fast = CharacterMovement("gallop", travel_width=1000.0)
+    start_x = m_fast.x
+    m_fast._begin_turn(GALLOP_AIRBORNE_SPEED_PX_PER_SEC)
+    m_fast._advance_turn(0.01, GALLOP_AIRBORNE_SPEED_PX_PER_SEC)
+    fast_dx = abs(m_fast.x - start_x)
+
+    m_slow = CharacterMovement("gallop", travel_width=1000.0)
+    start_x2 = m_slow.x
+    m_slow._begin_turn(GALLOP_AIRBORNE_SPEED_PX_PER_SEC)  # same trigger -> same _turn_scale
+    m_slow._advance_turn(0.01, GALLOP_GROUND_SPEED_PX_PER_SEC)  # slower *live* speed
+    slow_dx = abs(m_slow.x - start_x2)
+
+    expected_ratio = GALLOP_AIRBORNE_SPEED_PX_PER_SEC / GALLOP_GROUND_SPEED_PX_PER_SEC
+    assert fast_dx == pytest.approx(slow_dx * expected_ratio, rel=1e-9)
+    assert fast_dx > slow_dx * 2  # sanity: airborne speed is ~4x ground speed
+
+
+def test_gallop_stride_sync_holds_through_frequent_turns() -> None:
+    # Integration-level companion to the direct `_advance_turn` test above:
+    # even with a travel_width narrow enough to force frequent edge turns,
+    # the airborne beats must still carry most of each cycle's dx (the same
+    # >=70% contract bound `test_gallop_airborne_phase_carries_most_of_the_
+    # stride` checks bounce-free) -- if a turn instead froze the speed it
+    # was triggered at for its whole duration, wide swings of ground-speed
+    # motion happening at airborne-speed amplitude (or vice versa) would
+    # distort this ratio.
+    m = CharacterMovement("gallop", travel_width=400.0, rng=random.Random(3))
+    dt = 0.005
+    steps = round(120.0 / dt)  # 120 simulated seconds, many bounces at this width
+
+    airborne_dx = 0.0
+    ground_dx = 0.0
+    prev_x, prev_y = m.step(0.0)
+    for _ in range(steps):
+        x, y = m.step(dt)
+        dx = abs(x - prev_x)
+        if y > 0.0 or prev_y > 0.0:
+            airborne_dx += dx
+        else:
+            ground_dx += dx
+        prev_x, prev_y = x, y
+
+    total_dx = airborne_dx + ground_dx
+    assert total_dx > 0.0
+    assert airborne_dx / total_dx >= 0.7
+
+
+def test_turn_duration_stays_in_contract_range_at_a_narrow_travel_width() -> None:
+    # Regression (Codex review, Minor 3): `_turn_duration` used to shrink
+    # below the contract's 0.25-0.35s band at travel widths narrower than
+    # the nominal ease distance. It's now always `TURN_DURATION_SECONDS`
+    # (the turn's *amplitude* is what scales down instead, via
+    # `_turn_scale`) -- verify at a travel_width well below walk's ~4.3px
+    # nominal ease distance that duration stays in range and `x` never
+    # leaves `[0, travel_width]`.
+    travel_width = 2.0  # far narrower than WALK_SPEED * TURN_DURATION_SECONDS / pi
+    dt = 0.0005
+    velocities, _turning = _velocities_through_first_turn(
+        "walk", travel_width=travel_width, dt=dt, max_steps=5000
+    )
+    turn_duration = len(velocities) * dt
+    assert 0.25 <= turn_duration <= 0.35
+
+    m = CharacterMovement("walk", travel_width=travel_width, rng=random.Random(2))
+    for _ in range(2000):
+        x, _ = m.step(dt)
+        assert 0.0 <= x <= travel_width
+
+
+def test_patrol_never_drops_dt_even_with_an_adversarial_huge_step() -> None:
+    # Regression (Codex review, Minor 4): `_patrol`'s internal loop used to
+    # cap at 10,000 iterations and silently drop whatever `dt` remained
+    # unconsumed past that -- with a narrow `travel_width` (many bounces per
+    # simulated second) and a huge single `dt`, that cap is reachable.
+    # `step()` must still fully account for `dt` (bounded, finite result;
+    # see `_patrol`'s post-loop leftover handling) rather than silently
+    # losing time and leaving `x` wherever the cap happened to land.
+    m = CharacterMovement("walk", travel_width=10.0, rng=random.Random(1))
+    x, y = m.step(20_000.0)  # 20,000 simulated seconds in one call
+
+    assert math.isfinite(x)
+    assert math.isfinite(y)
+    assert 0.0 <= x <= 10.0
+
+    # The state machine must still be usable afterwards -- not stuck.
+    x2, _ = m.step(0.01)
+    assert math.isfinite(x2)
+    assert 0.0 <= x2 <= 10.0

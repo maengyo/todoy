@@ -134,9 +134,11 @@ $ todoy tui
 
 - `todoy tui --brief`는 한 줄만 출력합니다 — `.zshrc` / `.bashrc`에 넣으면
   새 터미널마다 잔소리를 들을 수 있어요: `🐱 3 todos: 우유 사기 (+2 more)`
-- 캐릭터 15종: cat(기본), dog, ghost, robot, horse, turtle, snail, penguin,
-  frog, bee, owl, unicorn, dino, alien, crab — `--character 이름`,
-  `--lang en|ko`, 이모지 없는 터미널엔 `--ascii`.
+- 캐릭터 25종: cat(기본), dog, ghost, robot, horse, turtle, snail, penguin,
+  frog, bee, owl, unicorn, dino, alien, crab, fox, panda, chick, rabbit,
+  hamster, duck, whale, octopus, butterfly, dragon — 전부 터미널 러너용
+  자체 ASCII 걸음 사이클 보유. `--character 이름`, `--lang en|ko`,
+  이모지 없는 터미널엔 `--ascii`.
 - 메시지는 할 일을 놀리지, 당신을 공격하지 않습니다. 캐릭터는 알려줄 뿐 — 끝내는 건 여전히 당신 몫.
 
 ### 데스크톱 위의 캐릭터 (`todoy overlay`, macOS)

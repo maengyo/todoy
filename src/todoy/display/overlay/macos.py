@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 # --- tunables ----------------------------------------------------------------
 
 FIRST_FIRE_DELAY_SECONDS = 5.0
-WANDER_TICK_SECONDS = 0.15
+WANDER_TICK_SECONDS = 1.0 / 30.0  # 30fps (M12 Task 29): smooth motion + squash-stretch
 REMINDER_CHECK_INTERVAL_SECONDS = 1.0
 BUBBLE_AUTO_HIDE_SECONDS = 30.0
 BUBBLE_EFFECT_DURATION_SECONDS = 0.22  # pop/fade/slide entrance animations
@@ -1653,6 +1653,25 @@ class _FlagPanelView(AppKit.NSView):
             self.controller.onSnoozeClicked_(self)
 
 
+_cached_emoji_draw_attrs: dict[str, AppKit.NSFont] | None = None
+
+
+def _emoji_draw_attrs() -> dict[str, AppKit.NSFont]:
+    """Lazily build, then cache, the font/attributes dict used to draw the
+    character's emoji (`_CharacterView._draw_content`). `EMOJI_FONT_SIZE`
+    never changes at runtime, so there's nothing to invalidate -- built
+    once, on the main thread the first time a character view draws, and
+    reused for the life of the process. Avoids reallocating an `NSFont` +
+    dict on every `drawRect_` call, which -- with gallop's continuously
+    varying squash-stretch -- happens on essentially every 30fps wander
+    tick (Codex review follow-up, M12 Task 29 nit)."""
+    global _cached_emoji_draw_attrs
+    if _cached_emoji_draw_attrs is None:
+        font = AppKit.NSFont.systemFontOfSize_(EMOJI_FONT_SIZE)
+        _cached_emoji_draw_attrs = {AppKit.NSFontAttributeName: font}
+    return _cached_emoji_draw_attrs
+
+
 class _CharacterView(AppKit.NSView):
     """Draws the character (user image or large emoji) and handles clicks.
 
@@ -1673,6 +1692,14 @@ class _CharacterView(AppKit.NSView):
     # Gallop-only squash-stretch, synced to bounce phase; 1.0 (no-op) for
     # every other movement -- see GALLOP_SQUASH_SCALE_MIN/MAX above.
     squash_scale: float = 1.0
+    # Emoji draw-call cache (Codex review follow-up, M12 Task 29 nit): with
+    # gallop's squash-stretch continuously varying `squash_scale`,
+    # `drawRect_` fires on essentially every 30fps wander tick -- caching
+    # the built-once NSString (per `self.emoji`, which is set once at
+    # construction and never changes) avoids reallocating it on every draw.
+    # The font/attrs dict is cached module-wide, below.
+    _cached_emoji_text: AppKit.NSString | None = None
+    _cached_emoji_source: str = ""
 
     @objc.python_method
     def set_image(self, image: AppKit.NSImage | None) -> None:
@@ -1710,9 +1737,11 @@ class _CharacterView(AppKit.NSView):
             )
             return
 
-        font = AppKit.NSFont.systemFontOfSize_(EMOJI_FONT_SIZE)
-        attrs = {AppKit.NSFontAttributeName: font}
-        text = Foundation.NSString.stringWithString_(self.emoji)
+        attrs = _emoji_draw_attrs()
+        if self._cached_emoji_text is None or self._cached_emoji_source != self.emoji:
+            self._cached_emoji_text = Foundation.NSString.stringWithString_(self.emoji)
+            self._cached_emoji_source = self.emoji
+        text = self._cached_emoji_text
         text_size = text.sizeWithAttributes_(attrs)
         origin = Foundation.NSMakePoint(
             (bounds.size.width - text_size.width) / 2,
