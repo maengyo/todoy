@@ -175,10 +175,15 @@ def test_bubble_tracks_a_moving_ground_character_every_tick() -> None:
             expected_x = (
                 char_frame.origin.x + char_frame.size.width / 2 - bubble_frame.size.width / 2
             )
-            assert bubble_frame.origin.x == pytest.approx(expected_x, abs=0.5)
+            # abs=1.0 throughout: on a 1x (non-Retina) backing store --
+            # like CI's macOS runners -- AppKit snaps fractional window
+            # frame origins to whole device pixels, so exact equality is
+            # environment-dependent.
+            assert bubble_frame.origin.x == pytest.approx(expected_x, abs=1.0)
             # Above the character, glued to it vertically as well.
             assert bubble_frame.origin.y == pytest.approx(
-                char_frame.origin.y + char_frame.size.height + 6.0  # BUBBLE_GAP_ABOVE_CHARACTER
+                char_frame.origin.y + char_frame.size.height + 6.0,  # BUBBLE_GAP_ABOVE_CHARACTER
+                abs=1.0,
             )
             if bubble_frame.origin.x != previous_x:
                 moved = True
@@ -204,10 +209,13 @@ def test_bubble_tracks_a_sky_character_below_it_with_the_tail_on_top() -> None:
             expected_x = (
                 char_frame.origin.x + char_frame.size.width / 2 - bubble_frame.size.width / 2
             )
-            assert bubble_frame.origin.x == pytest.approx(expected_x, abs=0.5)
+            # abs=1.0: whole-device-pixel frame snapping on 1x backing
+            # stores (CI runners) -- see the ground-tracking test above.
+            assert bubble_frame.origin.x == pytest.approx(expected_x, abs=1.0)
             # Below the sky character, riding along vertically too.
             assert bubble_frame.origin.y == pytest.approx(
-                char_frame.origin.y - bubble_frame.size.height - 6.0  # BUBBLE_GAP_BELOW_CHARACTER
+                char_frame.origin.y - bubble_frame.size.height - 6.0,  # BUBBLE_GAP_BELOW_CHARACTER
+                abs=1.0,
             )
     finally:
         controller._invalidate_all_timers()
@@ -287,11 +295,15 @@ def test_bubble_shake_wiggles_the_content_not_the_window_frame() -> None:
         view = controller.bubble_panel_view
         assert view.bounds().origin.x == pytest.approx(-controller._shake_offset_px)
 
-        # The window frame itself stays exactly at the ride-along base --
-        # the frame is owned by the tick, never by the shake.
+        # The window frame itself stays at the ride-along base -- the
+        # frame is owned by the tick, never by the shake. abs=1.0: AppKit
+        # snaps fractional frame origins to whole device pixels on a 1x
+        # backing store (CI's non-Retina runners), so exact equality is
+        # environment-dependent; the shake amplitude is 8px, so a 1px
+        # tolerance still cleanly distinguishes "not shaken".
         base = controller._message_base_origin
         frame = controller.bubble_window.frame()
-        assert frame.origin.x == pytest.approx(base.x)
+        assert frame.origin.x == pytest.approx(base.x, abs=1.0)
 
         # Cancelling (what a hide/new fire does) restores the content.
         controller._cancel_bubble_shake()

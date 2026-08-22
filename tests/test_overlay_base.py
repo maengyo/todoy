@@ -1183,14 +1183,19 @@ def test_flourish_ticks_move_the_bubble_along_with_the_character() -> None:
         bubble_frame = controller.bubble_window.frame()
         assert char_frame.origin.y != pytest.approx(char_y_before)  # resurface dips/pops
         # The bubble followed the character's vertical flourish nudge...
+        # (abs=1.0 on the equality checks: AppKit snaps fractional window
+        # frame origins to whole device pixels on a 1x backing store --
+        # CI's non-Retina runners -- so exact equality is environment-
+        # dependent.)
         assert bubble_frame.origin.y != pytest.approx(bubble_y_before)
         assert bubble_frame.origin.y == pytest.approx(
-            char_frame.origin.y + char_frame.size.height + 6.0  # BUBBLE_GAP_ABOVE_CHARACTER
+            char_frame.origin.y + char_frame.size.height + 6.0,  # BUBBLE_GAP_ABOVE_CHARACTER
+            abs=1.0,
         )
         # ...and stays centered on it horizontally (whale is mid-screen
         # here, so no edge clamping is in play).
         expected_x = char_frame.origin.x + char_frame.size.width / 2 - bubble_frame.size.width / 2
-        assert bubble_frame.origin.x == pytest.approx(expected_x, abs=0.5)
+        assert bubble_frame.origin.x == pytest.approx(expected_x, abs=1.0)
     finally:
         controller._invalidate_all_timers()
 
