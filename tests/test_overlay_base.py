@@ -763,10 +763,10 @@ def test_controller_persona_matches_the_real_catalog_lookup() -> None:
 
 
 def test_sky_zone_cruise_line_sits_near_the_top_of_the_screen() -> None:
-    from todoy.display.overlay.macos import CHARACTER_WINDOW_SIZE
-
     controller = _build_persona_controller("butterfly")
     try:
+        from todoy.display.overlay.macos import CHARACTER_WINDOW_SIZE
+
         assert controller.persona.zone == "sky"
         screen_frame = controller._screen_frame()
         cruise_y = controller._character_zone_y(screen_frame, 0.0)
@@ -835,14 +835,14 @@ def test_sky_top_margin_reflects_an_injected_menu_bar_height() -> None:
     override per-instance like any other Python attribute (already relied
     on elsewhere, e.g. swapping `controller.alarm_clock`).
     """
-    from todoy.display.overlay.macos import (
-        CHARACTER_WINDOW_SIZE,
-        SKY_TOP_BUFFER_PX,
-        _menu_bar_clearance_px,
-    )
-
     controller = _build_persona_controller("butterfly")
     try:
+        from todoy.display.overlay.macos import (
+            CHARACTER_WINDOW_SIZE,
+            SKY_TOP_BUFFER_PX,
+            _menu_bar_clearance_px,
+        )
+
         injected_margin = 37.0 + SKY_TOP_BUFFER_PX
         controller._sky_top_margin = lambda: injected_margin
 
@@ -922,14 +922,14 @@ def test_bubble_message_still_goes_above_a_ground_character() -> None:
 
 
 def test_banner_persona_hangs_the_flag_panel_below_the_character() -> None:
-    from todoy.display.overlay.macos import _BannerPanelView
-
     controller = _build_persona_controller(
         "butterfly",
         message_style="flag",
         get_todos=lambda: [],
     )
     try:
+        from todoy.display.overlay.macos import _BannerPanelView
+
         assert controller.persona.banner is True
         _run_ticks(controller, 90)
         controller._show_reminder()
@@ -955,10 +955,10 @@ def test_banner_persona_hangs_the_flag_panel_below_the_character() -> None:
 def test_non_banner_persona_keeps_the_pole_above_flag() -> None:
     # Regression: personas without persona.banner keep the pre-M13 pole-
     # above pennant, not the new banner-below panel.
-    from todoy.display.overlay.macos import _FlagPanelView
-
     controller = _build_persona_controller("cat", message_style="flag")
     try:
+        from todoy.display.overlay.macos import _FlagPanelView
+
         assert controller.persona.banner is False
         _run_ticks(controller, 90)
         controller._show_reminder()
