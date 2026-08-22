@@ -12,6 +12,7 @@ class Character:
     name: str
     emoji: str
     ascii_art: str  # single-line, pure ASCII
+    sprite: str | None = None  # pixelart.py SPRITES key, if this character has one
 
 
 CHARACTERS: dict[str, Character] = {
@@ -40,6 +41,9 @@ CHARACTERS: dict[str, Character] = {
     "octopus": Character(name="octopus", emoji="🐙", ascii_art="~~(o.o)~~"),
     "butterfly": Character(name="butterfly", emoji="🦋", ascii_art="><(^.^)><"),
     "dragon": Character(name="dragon", emoji="🐉", ascii_art="<(^==^)>"),
+    "blocky": Character(name="blocky", emoji="🟫", ascii_art="[#-#]", sprite="blocky"),
+    "slime": Character(name="slime", emoji="🟩", ascii_art="(o_o)~", sprite="slime"),
+    "knight": Character(name="knight", emoji="🛡️", ascii_art="[o=|=o]", sprite="knight"),
 }
 
 _DEFAULT_CHARACTER_NAME = "cat"

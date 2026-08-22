@@ -130,3 +130,18 @@ def test_stride_columns_fallback_is_two_for_unknown_names_too() -> None:
     # stride_columns performs no character-name validation -- fallback rule
     # applies uniformly, unlike gait_frames which defers to get_character.
     assert stride_columns("not-a-real-character") == 2
+
+
+# --- M14: blocky/slime/knight (pixel-art characters' ASCII/TUI fallback) ----
+
+
+@pytest.mark.parametrize("name", ["blocky", "slime", "knight"])
+def test_m14_pixelart_character_has_a_two_frame_ascii_gait(name: str) -> None:
+    frames = GAIT_FRAMES[name]
+    assert len(frames) == 2
+    assert len(set(frames)) == 2
+
+
+@pytest.mark.parametrize("name", ["blocky", "slime", "knight"])
+def test_m14_pixelart_character_has_a_positive_stride(name: str) -> None:
+    assert stride_columns(name) > 0

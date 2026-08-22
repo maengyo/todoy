@@ -112,6 +112,36 @@ def test_characters_has_at_least_twenty_five_entries() -> None:
     assert len(CHARACTERS) >= 25
 
 
+M14_CHARACTER_EMOJI = {
+    "blocky": "🟫",
+    "slime": "🟩",
+    "knight": "🛡️",
+}
+
+
+@pytest.mark.parametrize(("name", "emoji"), list(M14_CHARACTER_EMOJI.items()))
+def test_m14_character_is_registered_with_expected_emoji(name: str, emoji: str) -> None:
+    assert name in CHARACTERS
+    assert CHARACTERS[name].emoji == emoji
+
+
+@pytest.mark.parametrize("name", list(M14_CHARACTER_EMOJI))
+def test_m14_character_is_resolvable_via_get_character(name: str) -> None:
+    character = get_character(name)
+    assert character.name == name
+    assert character.emoji == M14_CHARACTER_EMOJI[name]
+
+
+@pytest.mark.parametrize("name", list(M14_CHARACTER_EMOJI))
+def test_m14_character_has_a_matching_sprite_field(name: str) -> None:
+    assert CHARACTERS[name].sprite == name
+
+
+@pytest.mark.parametrize("name", [n for n in CHARACTERS if n not in M14_CHARACTER_EMOJI])
+def test_non_pixelart_characters_have_no_sprite(name: str) -> None:
+    assert CHARACTERS[name].sprite is None
+
+
 def test_all_expected_names_present() -> None:
     expected = {
         "cat",
@@ -121,6 +151,7 @@ def test_all_expected_names_present() -> None:
         "horse",
         *NEW_CHARACTER_EMOJI,
         *M12_CHARACTER_EMOJI,
+        *M14_CHARACTER_EMOJI,
     }
     assert expected == set(CHARACTERS)
 

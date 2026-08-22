@@ -152,6 +152,25 @@ GAIT_FRAMES: dict[str, tuple[str, ...]] = {
         "<(^==^)>",
         ">(^==^)<",
     ),
+    "blocky": (
+        # M14: TUI/ASCII fallback for the pixel-art "blocky" character --
+        # arms swap which side is raised, echoing the real sprite's
+        # counter-swing.
+        "[#-#]",
+        "{#-#}",
+    ),
+    "slime": (
+        # Squash/stretch, ASCII-style: the blob's silhouette characters
+        # widen and narrow between hops.
+        "(o_o)~",
+        "<o_o>~",
+    ),
+    "knight": (
+        # Cape flag flutters: the trailing glyph flips between '\' and '/'
+        # while both frames stay a well-formed, equal-width bracketed knight.
+        "[o=|=o\\]",
+        "[o=|=o/]",
+    ),
 }
 
 STRIDE_COLUMNS: dict[str, int] = {
@@ -180,6 +199,9 @@ STRIDE_COLUMNS: dict[str, int] = {
     "octopus": 2,
     "butterfly": 3,
     "dragon": 5,
+    "blocky": 2,
+    "slime": 3,
+    "knight": 2,
 }
 
 _FALLBACK_STRIDE = 2

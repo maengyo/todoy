@@ -139,7 +139,18 @@ $ todoy tui
 
 - `todoy tui --brief` prints a single line — drop it in your `.zshrc` / `.bashrc`
   to get nagged by every new terminal: `🐱 3 todos: buy milk (+2 more)`
-- 25 characters to choose from, every one with its own animated ASCII gait
+- **Pixel-art sprite characters with real limb animation** — `blocky`
+  (a game-style blocky humanoid), `slime`, and `knight` are drawn frame by
+  frame: walk cycles alternate legs and counter-swing arms (stride-locked to
+  distance, no foot sliding), plus idle/jump/wave states driven by what the
+  character is doing. All original art, defined as code:
+
+  ![pixel sprites walking](demo/sprites.gif)
+
+  Bring your own sprites too: point `[display] character_sprites` at a folder
+  of `walk_0.png, walk_1.png, idle_0.png…` and todoy animates them.
+
+- 28 characters to choose from, every one with its own animated ASCII gait
   cycle for the terminal runner (`--character NAME`, `--lang en|ko`,
   `--ascii` for emoji-free terminals):
 

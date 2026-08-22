@@ -668,11 +668,14 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
     scheduler = core_module.ReminderScheduler(interval_minutes, config.snooze_minutes)
     assert movement != "auto"
     assert message_style != "auto"
+    sprite_name: str | None = character.sprite
     options = base_module.OverlayOptions(
         character=character,
         character_image=config.character_image,
         language=language,
         test_seconds=_overlay_test_seconds(),
+        sprite_name=sprite_name,
+        sprite_folder=config.character_sprites,
         movement=movement,
         bubble_effect=bubble_effect,
         message_style=message_style,

@@ -54,6 +54,18 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 - Markdown source no longer reads symlinked files during folder scans (a symlink pointing outside the folder could leak file contents as todos); pinned notes are exempt (explicit user config).
 - The CLI's generic error output is sanitized too — `--character` error messages no longer reflect raw control characters to stderr.
 
+## M14 (follow-up) — 2026-08-23
+
+### Decisions
+
+- **Animated sprite characters (issue #18).** User feedback: a translating emoji is not animation. Shipped an original pixel-art pack (blocky/slime/knight — Minecraft/game-style, but original art; copyrighted game characters cannot be bundled) defined entirely as code (pixel grids + palettes in `display/pixelart.py`, no binary assets). Each has idle/walk/jump/wave states; walk cycles genuinely articulate (legs alternate, arms counter-swing, 1px bob).
+- **Renderer.** Pixel grids → cached nearest-neighbor NSImages (~6x, crisp). A pure state machine (`display/overlay/spritestate.py`, CI-tested on every OS) picks the state from what the character is doing: entrance-jump > flourish-wave > airborne-jump > walk (frame index locked to distance — no foot sliding) > idle (~2fps, forced during eased turns). Facing mirror/squash/entrance alpha unchanged; emoji characters unaffected.
+- **Bring-your-own sprites.** `[display] character_sprites` points at a folder of `<state>_<n>.png` frames (fallbacks: jump→walk[0], wave→idle; ≤96px) — users can animate any sprites they own.
+
+### Modifications from cross-review
+
+- Pure sprite logic extracted from macos.py so its tests run on Linux/Windows CI; turning uses `movement.is_turning` instead of per-tick net dx; knight's ASCII fallback frame repaired; leftover parallel-dev scaffolding removed.
+
 ## M13 (follow-up) — 2026-08-22
 
 ### Decisions

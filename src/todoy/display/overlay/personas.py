@@ -88,6 +88,14 @@ PERSONAS: dict[str, Persona] = {
     "panda": Persona("ground", "walk_in", "none", False, "walk"),
     "chick": Persona("ground", "walk_in", "none", False, "walk"),
     "hamster": Persona("ground", "walk_in", "none", False, "walk"),
+    # -- ground: M14 pixel-art characters, plain walk-in ---------------------
+    # (Task 34's choice: all three are ordinary ground walkers -- the
+    # articulated walk cycle itself is the spectacle, no need for an exotic
+    # entrance/flourish on top of it. "hop" for blocky's flourish nods at
+    # its Minecraft-mob energy without touching its persona's movement.)
+    "blocky": Persona("ground", "walk_in", "hop", False, "walk"),
+    "slime": Persona("ground", "walk_in", "hop", False, "walk"),
+    "knight": Persona("ground", "walk_in", "none", False, "walk"),
 }
 
 _DEFAULT_PERSONA = Persona("ground", "walk_in", "none", False, "walk")

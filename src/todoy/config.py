@@ -28,6 +28,7 @@ class Config:
     reminder_interval_minutes: int = DEFAULT_INTERVAL_MINUTES
     character: str = DEFAULT_CHARACTER
     character_image: Path | None = None
+    character_sprites: Path | None = None
     snooze_minutes: int = DEFAULT_SNOOZE_MINUTES
     movement: str = DEFAULT_MOVEMENT
     bubble_effect: str = DEFAULT_BUBBLE_EFFECT
@@ -126,6 +127,10 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         display.get("character_image"),
         "display.character_image",
     )
+    character_sprites = _optional_display_image_path(
+        display.get("character_sprites"),
+        "display.character_sprites",
+    )
     snooze_minutes = display.get("snooze_minutes", DEFAULT_SNOOZE_MINUTES)
     if isinstance(snooze_minutes, bool) or not isinstance(snooze_minutes, int):
         raise ValueError("display.snooze_minutes must be an int")
@@ -146,6 +151,7 @@ def _config_from_toml(data: dict[str, Any]) -> Config:
         reminder_interval_minutes=reminder_interval_minutes,
         character=character,
         character_image=character_image,
+        character_sprites=character_sprites,
         snooze_minutes=snooze_minutes,
         movement=movement,
         bubble_effect=bubble_effect,
@@ -222,9 +228,11 @@ def _config_to_toml(config: Config) -> str:
                 "[display]",
                 f"character = {_toml_string(config.character)}",
                 f"character_image = {_toml_string(_display_image_value(config))}",
-                f"snooze_minutes = {config.snooze_minutes}",
             ]
         )
+        if config.character_sprites is not None:
+            lines.append(f"character_sprites = {_toml_string(str(config.character_sprites))}")
+        lines.append(f"snooze_minutes = {config.snooze_minutes}")
         if config.movement != DEFAULT_MOVEMENT:
             lines.append(f"movement = {_toml_string(config.movement)}")
         if config.bubble_effect != DEFAULT_BUBBLE_EFFECT:
@@ -247,6 +255,7 @@ def _should_emit_display_table(config: Config) -> bool:
     return (
         config.character != DEFAULT_CHARACTER
         or config.character_image is not None
+        or config.character_sprites is not None
         or config.snooze_minutes != DEFAULT_SNOOZE_MINUTES
         or config.movement != DEFAULT_MOVEMENT
         or config.bubble_effect != DEFAULT_BUBBLE_EFFECT

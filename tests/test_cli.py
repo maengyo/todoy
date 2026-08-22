@@ -63,6 +63,7 @@ class FakeCharacter:
     name: str
     emoji: str
     ascii_art: str
+    sprite: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,8 @@ class FakeOverlayOptions:
     movement: str
     bubble_effect: str
     message_style: str
+    sprite_name: str | None = None
+    sprite_folder: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1652,11 +1655,13 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     install_fake_animation_module(monkeypatch)
     state = install_fake_overlay_modules(monkeypatch, exit_code=23)
     image_path = tmp_path / "robot.png"
+    sprite_folder = tmp_path / "sprites"
     save_config(
         Config(
             reminder_interval_minutes=99,
             character="robot",
             character_image=image_path,
+            character_sprites=sprite_folder,
             snooze_minutes=8,
         ),
         config_file,
@@ -1675,6 +1680,8 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     assert state.options is not None
     assert state.options.character.name == "robot"
     assert state.options.character_image == image_path
+    assert state.options.sprite_name is None
+    assert state.options.sprite_folder == sprite_folder
     assert state.options.language == "ko"
     assert state.options.test_seconds == 1.5
     assert state.options.movement == "walk"
@@ -1939,6 +1946,8 @@ def test_overlay_auto_movement_resolves_persona_before_overlay_options(
         character_image: Path | None,
         language: str,
         test_seconds: float | None,
+        sprite_name: str | None,
+        sprite_folder: Path | None,
         movement: str,
         bubble_effect: str,
         message_style: str,
@@ -1954,6 +1963,8 @@ def test_overlay_auto_movement_resolves_persona_before_overlay_options(
             movement=movement,
             bubble_effect=bubble_effect,
             message_style=message_style,
+            sprite_name=sprite_name,
+            sprite_folder=sprite_folder,
         )
 
     base_module.OverlayOptions = overlay_options
@@ -1994,6 +2005,8 @@ def test_overlay_auto_message_style_resolves_persona_before_overlay_options(
         character_image: Path | None,
         language: str,
         test_seconds: float | None,
+        sprite_name: str | None,
+        sprite_folder: Path | None,
         movement: str,
         bubble_effect: str,
         message_style: str,
@@ -2009,6 +2022,8 @@ def test_overlay_auto_message_style_resolves_persona_before_overlay_options(
             movement=movement,
             bubble_effect=bubble_effect,
             message_style=message_style,
+            sprite_name=sprite_name,
+            sprite_folder=sprite_folder,
         )
 
     base_module.OverlayOptions = overlay_options
@@ -2045,6 +2060,26 @@ def test_overlay_character_flag_overrides_config_and_wires_real_character(
     assert captured.err == ""
     assert state.options is not None
     assert state.options.character.name == "horse"
+    assert not data_file.exists()
+
+
+def test_overlay_character_blocky_wires_sprite_name_from_real_catalog(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+
+    exit_code = main(["overlay", "--character", "blocky", "--movement", "walk"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.options is not None
+    assert state.options.character.name == "blocky"
+    assert state.options.sprite_name == "blocky"
     assert not data_file.exists()
 
 

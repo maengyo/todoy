@@ -76,6 +76,8 @@ def test_overlay_options_movement_and_bubble_effect_default() -> None:
     assert options.movement == "walk"
     assert options.bubble_effect == "pop"
     assert options.message_style == "bubble"
+    assert options.sprite_name is None
+    assert options.sprite_folder is None
 
 
 def test_overlay_options_movement_and_bubble_effect_overridable() -> None:

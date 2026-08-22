@@ -132,6 +132,28 @@ def test_persona_of_unlisted_character_is_reachable_via_function_and_dict() -> N
         assert persona(name) == PERSONAS[name]
 
 
+# --- M14: pixel-art characters (blocky/slime/knight) -----------------------
+
+
+@pytest.mark.parametrize("name", ["blocky", "slime", "knight"])
+def test_pixelart_character_has_a_persona(name: str) -> None:
+    assert name in PERSONAS
+
+
+@pytest.mark.parametrize("name", ["blocky", "slime", "knight"])
+def test_pixelart_character_is_a_ground_walk_in_walker(name: str) -> None:
+    p = persona(name)
+    assert p.zone == "ground"
+    assert p.entrance == "walk_in"
+    assert p.movement == "walk"
+    assert p.banner is False
+
+
+@pytest.mark.parametrize("name", ["blocky", "slime", "knight"])
+def test_pixelart_character_flourish_is_a_valid_kind(name: str) -> None:
+    assert persona(name).flourish in FLOURISH_KINDS
+
+
 # --- EntranceAnimation: construction --------------------------------------------
 
 

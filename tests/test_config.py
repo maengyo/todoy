@@ -33,6 +33,7 @@ def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
     assert config.reminder_interval_minutes == DEFAULT_INTERVAL_MINUTES
     assert config.character == "cat"
     assert config.character_image is None
+    assert config.character_sprites is None
     assert config.snooze_minutes == 5
     assert config.movement == "auto"
     assert config.bubble_effect == "pop"
@@ -114,6 +115,7 @@ def test_load_config_reads_display_schema_and_expands_image_path(
 [display]
 character = "robot"
 character_image = "~/robot.png"
+character_sprites = "~/sprites"
 snooze_minutes = 9
 message_style = "flag"
 """.lstrip(),
@@ -123,6 +125,7 @@ message_style = "flag"
     assert load_config(path) == Config(
         character="robot",
         character_image=fake_home / "robot.png",
+        character_sprites=fake_home / "sprites",
         snooze_minutes=9,
         message_style="flag",
     )
@@ -167,11 +170,15 @@ def test_load_config_treats_empty_display_image_as_none(tmp_path: Path) -> None:
         """
 [display]
 character_image = ""
+character_sprites = ""
 """.lstrip(),
         encoding="utf-8",
     )
 
-    assert load_config(path).character_image is None
+    config = load_config(path)
+
+    assert config.character_image is None
+    assert config.character_sprites is None
 
 
 def test_load_config_wraps_corrupt_toml_with_path(tmp_path: Path) -> None:
@@ -219,6 +226,10 @@ character = 123
         """
 [display]
 character_image = 123
+""",
+        """
+[display]
+character_sprites = 123
 """,
         """
 [display]
@@ -278,6 +289,7 @@ def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
     config = Config(
         character="robot",
         character_image=tmp_path / "robot.png",
+        character_sprites=tmp_path / "sprites",
         snooze_minutes=12,
         movement="dash",
         bubble_effect="shake",
@@ -291,6 +303,7 @@ def test_save_config_round_trips_display_settings(tmp_path: Path) -> None:
     assert "[display]" in text
     assert 'character = "robot"' in text
     assert tomllib.loads(text)["display"]["character_image"] == str(tmp_path / "robot.png")
+    assert tomllib.loads(text)["display"]["character_sprites"] == str(tmp_path / "sprites")
     assert "snooze_minutes = 12" in text
     assert 'movement = "dash"' in text
     assert 'bubble_effect = "shake"' in text
@@ -379,6 +392,7 @@ def test_save_config_omits_default_animation_keys_from_nondefault_display_table(
     assert "movement" not in text
     assert "bubble_effect" not in text
     assert "message_style" not in text
+    assert "character_sprites" not in text
     assert load_config(path) == Config(character="robot")
 
 

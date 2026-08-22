@@ -53,6 +53,8 @@ class OverlayOptions:
     movement: str = "walk"  # one of animations.MOVEMENTS
     bubble_effect: str = "pop"  # one of animations.BUBBLE_EFFECTS
     message_style: str = "bubble"  # one of animations.MESSAGE_STYLES
+    sprite_name: str | None = None
+    sprite_folder: Path | None = None
 
 
 class OverlayBackend(Protocol):

@@ -30,6 +30,23 @@ from todoy.display.overlay.core import (
     build_flag_line,
 )
 from todoy.display.overlay.personas import EntranceAnimation, FlourishAnimation, persona
+from todoy.display.overlay.spritestate import (
+    DEFAULT_USER_SPRITE_STRIDE_PX_PER_CYCLE,
+    SPRITE_CODE_SCALE,
+    SPRITE_IDLE_FPS,
+    SPRITE_JUMP_FPS,
+    SPRITE_STATES,
+    SPRITE_WAVE_FPS,
+    fit_code_sprite_scale,
+    fit_scale_to_max_height,
+    parse_palette_color,
+    scan_user_sprite_state_files,
+    sprite_frames_for_state,
+    sprite_movement_hop_peak_px,
+    sprite_state_for_tick,
+    sprite_time_frame_index,
+    sprite_walk_frame_index,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -57,6 +74,27 @@ CHARACTER_WINDOW_SIZE = 110.0
 EMOJI_FONT_SIZE = 64.0
 CHARACTER_BOTTOM_MARGIN = 24.0
 
+# --- animated sprite characters (M14 Task 35) ---------------------------------
+#
+# Two independent sprite sources, resolved in `_OverlayController.
+# _load_character_sprite` (most-specific-wins order): a user-supplied PNG
+# folder (`options.sprite_folder`) beats a built-in code pixel-art pack
+# (`options.sprite_name`, looked up in `todoy.display.pixelart` -- Task 34,
+# a pure/stdlib module imported lazily below so this file never hard-depends
+# on it existing/being importable), which beats the pre-existing static
+# `character_image`, which beats the emoji glyph -- every fallback rung
+# below it is completely unchanged, so a character with no sprite behaves
+# exactly as before (contract: "no regressions for emoji characters").
+#
+# All the pure state-selection/frame-index/scale-fitting logic (constants
+# included: `SPRITE_STATES`, `SPRITE_CODE_SCALE`, etc.) lives in
+# `todoy.display.overlay.spritestate` (Codex review follow-up: it used to
+# be inline here, but that meant its tests sat behind this module's AppKit
+# skip gate and never ran on non-macOS CI) -- imported above. Only the
+# AppKit-touching parts stay in this file: `_render_pixel_grid` (building
+# the actual `NSImage`s) and `_OverlayController`'s wiring of it all into
+# the window/view/timers.
+#
 # Sky zone (M13 Task 32): sky personas (persona.zone == "sky") cruise near
 # the TOP of the screen instead of the bottom -- the screen's actual menu
 # bar/notch clearance (`_OverlayController._sky_top_margin`, derived from
@@ -452,12 +490,39 @@ class _OverlayController(AppKit.NSObject):
         content_view.controller = self
         content_view.set_image(self._load_character_image())
         content_view.emoji = self.options.character.emoji
+
+        # Sprite animation clock/odometer (M14 Task 35): `_sprite_prev_x`
+        # seeds from this same t=0 `x` so the very first `onWanderTick_`
+        # call computes a correct (zero, unless movement is already in
+        # motion at t=0 -- it never is, `step(0.0)` above is a no-op)
+        # dx/distance delta instead of spuriously counting the character's
+        # full starting offset as "distance walked". `_sprite_stride_px_
+        # per_cycle`/`_sprite_draw_scale` are only meaningful once a sprite
+        # actually loads below; 0.0/1.0 make `sprite_walk_frame_index` a
+        # harmless no-op (always frame 0) if `_advance_sprite_animation`
+        # were ever called with no sprite loaded (it isn't -- guarded by
+        # `content_view.sprite_frames is None` -- but 0.0/1.0 keep it inert
+        # regardless).
+        self._sprite_distance_px = 0.0
+        self._sprite_time = 0.0
+        self._sprite_prev_x = x
+        self._sprite_stride_px_per_cycle = 0.0
+        self._sprite_draw_scale = 1.0
+        loaded_sprite = self._load_character_sprite()
+        if loaded_sprite is not None:
+            frames, stride_px_per_cycle, draw_scale, pixel_perfect = loaded_sprite
+            content_view.sprite_frames = frames
+            content_view.sprite_pixel_perfect = pixel_perfect
+            self._sprite_stride_px_per_cycle = stride_px_per_cycle
+            self._sprite_draw_scale = draw_scale
+
         window.setContentView_(content_view)
         window.orderFrontRegardless()
 
         self.char_window = window
         self.char_view = content_view
         self._apply_character_orientation(y_offset, extra_scale=scale)
+        self._advance_sprite_animation(x, y_offset)
 
     @objc.python_method
     def _load_character_image(self) -> AppKit.NSImage | None:
@@ -479,6 +544,175 @@ class _OverlayController(AppKit.NSObject):
         scale = min(CHARACTER_MAX_IMAGE_PX / w, CHARACTER_MAX_IMAGE_PX / h, 1.0)
         image.setSize_(Foundation.NSMakeSize(w * scale, h * scale))
         return image
+
+    @objc.python_method
+    def _load_character_sprite(
+        self,
+    ) -> tuple[dict[str, list[AppKit.NSImage]], float, float, bool] | None:
+        """Resolve this run's animated sprite source, if any (M14 Task 35,
+        contract section 3): `(frames, stride_px_per_cycle, draw_scale,
+        pixel_perfect)`, or `None` if neither source applies/loads -- the
+        caller (`_build_character_window`) then leaves `content_view.
+        sprite_frames` at its `None` default, so `_draw_content` falls
+        through to `character_image`/emoji exactly as before this feature
+        existed. Most-specific-wins order (see the module-level comment
+        above `SPRITE_STATES`): `options.sprite_folder` (user PNGs) before
+        `options.sprite_name` (a catalog character's built-in code pack).
+        """
+        sprite_folder: Path | None = self.options.sprite_folder
+        if sprite_folder is not None:
+            user_frames = self._load_user_sprite_frames(sprite_folder)
+            if user_frames is not None:
+                return (
+                    user_frames,
+                    DEFAULT_USER_SPRITE_STRIDE_PX_PER_CYCLE,
+                    1.0,
+                    False,
+                )
+
+        sprite_name: str | None = self.options.sprite_name
+        if not sprite_name:
+            return None
+        try:
+            # Lazy/deferred: `todoy.display.pixelart` is a pure/stdlib
+            # module (Task 34) with no AppKit dependency of its own, so
+            # this could just as well be a top-of-file import -- it's kept
+            # here instead so a character with no sprite never even
+            # attempts it, and so this module degrades gracefully (falls
+            # through to character_image/emoji, never crashes overlay
+            # startup) if that module is ever missing or a name it doesn't
+            # recognize slips through.
+            from todoy.display.pixelart import sprite as lookup_pixel_sprite
+        except ImportError:
+            return None
+        try:
+            sheet = lookup_pixel_sprite(sprite_name)
+        except ValueError:
+            return None
+
+        draw_scale = fit_code_sprite_scale(sheet.states, SPRITE_CODE_SCALE, CHARACTER_WINDOW_SIZE)
+        frames = {
+            state: [_render_pixel_grid(frame, sheet.palette, draw_scale) for frame in state_frames]
+            for state, state_frames in sheet.states.items()
+        }
+        return frames, float(sheet.stride_px_per_cycle), draw_scale, True
+
+    @objc.python_method
+    def _load_user_sprite_frames(self, folder: Path) -> dict[str, list[AppKit.NSImage]] | None:
+        """Load a user sprite folder (contract section 3: `<state>_<n>.png`
+        per `SPRITE_STATES`, `scan_user_sprite_state_files`). `None` if the
+        folder doesn't exist, any listed PNG fails to load, or "idle" (the
+        one state everything else can fall back to -- see
+        `sprite_frames_for_state`) isn't present at all; a partial folder
+        (e.g. idle + walk but no jump/wave) loads fine and leans on the
+        fallback. All frames of all states share one uniform scale
+        (`fit_scale_to_max_height`, derived from the single tallest loaded
+        frame) so switching states never visibly resizes the character.
+        """
+        try:
+            if not folder.is_dir():
+                return None
+        except OSError:
+            return None
+
+        raw: dict[str, list[AppKit.NSImage]] = {}
+        max_h = 0.0
+        for state in SPRITE_STATES:
+            paths = scan_user_sprite_state_files(folder, state)
+            if not paths:
+                continue
+            images: list[AppKit.NSImage] = []
+            for path in paths:
+                try:
+                    image = AppKit.NSImage.alloc().initWithContentsOfFile_(str(path))
+                except OSError:
+                    return None
+                if image is None:
+                    return None
+                w, h = image.size().width, image.size().height
+                if w <= 0 or h <= 0:
+                    return None
+                images.append(image)
+                max_h = max(max_h, h)
+            raw[state] = images
+
+        if "idle" not in raw:
+            return None
+
+        scale = fit_scale_to_max_height(max_h, CHARACTER_MAX_IMAGE_PX)
+        for images in raw.values():
+            for image in images:
+                w, h = image.size().width, image.size().height
+                image.setSize_(Foundation.NSMakeSize(w * scale, h * scale))
+        return raw
+
+    @objc.python_method
+    def _advance_sprite_animation(self, x: float, y_offset: float) -> None:
+        """Update the character view's `sprite_state`/`sprite_frame_index`
+        for this tick (M14 Task 35, contract section 3's state machine).
+        No-op (cheaply -- one attribute check) when no sprite is loaded, so
+        this costs nothing for the far more common emoji/character_image
+        path. Called from `_build_character_window` (t=0, so the very
+        first paint already shows the right pose) and every
+        `onWanderTick_`, mirroring how `_apply_character_orientation` is
+        driven.
+
+        `x` is `self.movement`'s own patrol position for this tick (i.e.
+        the same `x` `onWanderTick_` just got back from `movement.step`) --
+        NOT the window's final on-screen x, which also has the entrance/
+        flourish curve's `ex` added on top. Odometer distance and the
+        walk/idle state split are both about the character's own
+        locomotion, not about the flourish/entrance overlay riding on top
+        of it.
+
+        `self.movement.is_turning` (Codex review follow-up) is passed
+        straight through to `sprite_state_for_tick` -- see that function's
+        docstring for why net per-tick `dx` alone can't reliably tell walk
+        from idle while an eased edge-turn is in progress.
+        """
+        view = self.char_view
+        if view is None or view.sprite_frames is None:
+            return
+
+        dx = x - self._sprite_prev_x
+        self._sprite_prev_x = x
+        self._sprite_distance_px += abs(dx)
+        self._sprite_time += WANDER_TICK_SECONDS
+
+        entrance_active = self.entrance is not None and not self.entrance.finished
+        flourish_active = self.flourish is not None and not self.flourish.finished
+        movement = self.movement
+        state = sprite_state_for_tick(
+            dx=dx,
+            y_offset=y_offset,
+            hop_peak_px=sprite_movement_hop_peak_px(self.options.movement),
+            entrance_active=entrance_active,
+            entrance_is_hop_or_splash=entrance_active
+            and self.persona.entrance in ("hop_in", "splash"),
+            flourish_active=flourish_active,
+            is_turning=movement is not None and movement.is_turning,
+        )
+
+        frame_list = sprite_frames_for_state(view.sprite_frames, state)
+        count = len(frame_list)
+        if state == "walk":
+            index = sprite_walk_frame_index(
+                self._sprite_distance_px,
+                self._sprite_stride_px_per_cycle,
+                self._sprite_draw_scale,
+                count,
+            )
+        elif state == "jump":
+            index = sprite_time_frame_index(self._sprite_time, SPRITE_JUMP_FPS, count)
+        elif state == "wave":
+            index = sprite_time_frame_index(self._sprite_time, SPRITE_WAVE_FPS, count)
+        else:
+            index = sprite_time_frame_index(self._sprite_time, SPRITE_IDLE_FPS, count)
+
+        if view.sprite_state != state or view.sprite_frame_index != index:
+            view.sprite_state = state
+            view.sprite_frame_index = index
+            view.setNeedsDisplay_(True)
 
     @objc.python_method
     def _apply_character_orientation(self, y_offset: float, extra_scale: float = 1.0) -> None:
@@ -562,6 +796,7 @@ class _OverlayController(AppKit.NSObject):
         window.setFrameOrigin_(Foundation.NSMakePoint(new_x, new_y))
         window.setAlphaValue_(alpha)
         self._apply_character_orientation(y_offset, extra_scale=scale)
+        self._advance_sprite_animation(x, y_offset)
 
         # Only `flag`/banner rides along with the character every tick;
         # `bubble` appears at show-time position and stays put until
@@ -2044,6 +2279,63 @@ class _BannerPanelView(AppKit.NSView):
             self.controller.onSnoozeClicked_(self)
 
 
+# --- sprite animation: NSImage construction (the one AppKit-touching part) ----
+
+
+def _render_pixel_grid(
+    rows: tuple[str, ...], palette: dict[str, str], scale: float
+) -> AppKit.NSImage:
+    """Render one pixel-art frame (a tuple of equal-length row strings, per
+    `SpriteSheet.states`) to an `NSImage`: an `NSBitmapImageRep` built at
+    native (1 source char = 1 pixel) resolution, then wrapped in an
+    `NSImage` sized up by `scale` -- drawing at that larger size with
+    nearest-neighbor interpolation (`_CharacterView._draw_image_centered`,
+    `pixel_perfect=True`) is what keeps the blown-up pixels crisp instead of
+    blurred. `palette[' ']` is never consulted -- a space is always fully
+    transparent, per contract section 1 ("' ' = transparent"), regardless of
+    whether the sheet's palette dict happens to define a ' ' entry.
+
+    Row 0 is the frame's TOP row (matches how the pixel grids read visually
+    in pixelart.py's source, top-to-bottom) -- `NSBitmapImageRep.
+    setColor_atX_y_` addresses pixel (0, 0) at the top-left, so no y-flip is
+    needed to keep that orientation.
+    """
+    height = len(rows)
+    width = len(rows[0]) if height else 0
+    rep_cls = AppKit.NSBitmapImageRep
+    # fmt: off
+    bitmap = rep_cls.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(  # noqa: E501
+        None,
+        max(width, 1),
+        max(height, 1),
+        8,
+        4,
+        True,
+        False,
+        AppKit.NSDeviceRGBColorSpace,
+        0,
+        32,
+    )
+    # fmt: on
+    transparent = AppKit.NSColor.colorWithDeviceRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.0)
+    for y, row in enumerate(rows):
+        for x, ch in enumerate(row):
+            if ch == " ":
+                color = transparent
+            else:
+                r, g, b, a = parse_palette_color(palette[ch])
+                color = AppKit.NSColor.colorWithDeviceRed_green_blue_alpha_(
+                    r / 255.0, g / 255.0, b / 255.0, a / 255.0
+                )
+            bitmap.setColor_atX_y_(color, x, y)
+
+    image = AppKit.NSImage.alloc().initWithSize_(
+        Foundation.NSMakeSize(width * scale, height * scale)
+    )
+    image.addRepresentation_(bitmap)
+    return image
+
+
 _cached_emoji_draw_attrs: dict[str, AppKit.NSFont] | None = None
 
 
@@ -2097,6 +2389,22 @@ class _CharacterView(AppKit.NSView):
     _cached_emoji_text: AppKit.NSString | None = None
     _cached_emoji_source: str = ""
 
+    # Sprite mode (M14 Task 35): `state -> [NSImage, ...]` built once by
+    # `_OverlayController._load_character_sprite` (either a code pixel-art
+    # pack or a user PNG folder) and set directly here, like `facing`/
+    # `emoji` -- `None` (the default) means "no sprite", so an emoji/
+    # character_image character never even looks at these fields. When set,
+    # `_draw_content` prefers it over `_image`/`emoji` (see there).
+    # `sprite_pixel_perfect` selects nearest-neighbor scaling (code pixel
+    # art, always blocky by design) vs. the normal smooth interpolation
+    # (user PNGs, which may not be pixel art at all) -- `_draw_image_
+    # centered`. `sprite_state`/`sprite_frame_index` are updated every
+    # wander tick by `_OverlayController._advance_sprite_animation`.
+    sprite_frames: dict[str, list] | None = None
+    sprite_pixel_perfect: bool = False
+    sprite_state: str = "idle"
+    sprite_frame_index: int = 0
+
     @objc.python_method
     def set_image(self, image: AppKit.NSImage | None) -> None:
         self._image = image
@@ -2122,18 +2430,15 @@ class _CharacterView(AppKit.NSView):
 
     @objc.python_method
     def _draw_content(self, bounds: AppKit.NSRect) -> None:
+        if self.sprite_frames is not None:
+            frame_list = sprite_frames_for_state(self.sprite_frames, self.sprite_state)
+            if frame_list:
+                index = self.sprite_frame_index % len(frame_list)
+                self._draw_image_centered(bounds, frame_list[index], self.sprite_pixel_perfect)
+                return
+
         if self._image is not None:
-            size = self._image.size()
-            origin = Foundation.NSMakePoint(
-                (bounds.size.width - size.width) / 2,
-                (bounds.size.height - size.height) / 2,
-            )
-            self._image.drawAtPoint_fromRect_operation_fraction_(
-                origin,
-                Foundation.NSZeroRect,
-                AppKit.NSCompositingOperationSourceOver,
-                1.0,
-            )
+            self._draw_image_centered(bounds, self._image, pixel_perfect=False)
             return
 
         attrs = _emoji_draw_attrs()
@@ -2147,6 +2452,44 @@ class _CharacterView(AppKit.NSView):
             (bounds.size.height - text_size.height) / 2,
         )
         text.drawAtPoint_withAttributes_(origin, attrs)
+
+    @objc.python_method
+    def _draw_image_centered(
+        self, bounds: AppKit.NSRect, image: AppKit.NSImage, pixel_perfect: bool
+    ) -> None:
+        """Draw `image` centered in `bounds`. `pixel_perfect` (code sprite
+        frames only -- see `sprite_pixel_perfect`) forces nearest-neighbor
+        interpolation for the duration of this one draw call so the blown-up
+        pixel grid stays crisp; static `character_image`/user sprite PNGs
+        keep AppKit's normal smooth interpolation, unchanged from before
+        this sprite work (the `_image` path below used to draw inline here
+        with no interpolation override at all)."""
+        size = image.size()
+        origin = Foundation.NSMakePoint(
+            (bounds.size.width - size.width) / 2,
+            (bounds.size.height - size.height) / 2,
+        )
+        if not pixel_perfect:
+            image.drawAtPoint_fromRect_operation_fraction_(
+                origin,
+                Foundation.NSZeroRect,
+                AppKit.NSCompositingOperationSourceOver,
+                1.0,
+            )
+            return
+
+        context = AppKit.NSGraphicsContext.currentContext()
+        previous = context.imageInterpolation()
+        context.setImageInterpolation_(AppKit.NSImageInterpolationNone)
+        try:
+            image.drawAtPoint_fromRect_operation_fraction_(
+                origin,
+                Foundation.NSZeroRect,
+                AppKit.NSCompositingOperationSourceOver,
+                1.0,
+            )
+        finally:
+            context.setImageInterpolation_(previous)
 
     def mouseDown_(self, event: AppKit.NSEvent) -> None:
         # Clicking the character shows the current reminder on demand
