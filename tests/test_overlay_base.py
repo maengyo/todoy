@@ -737,9 +737,7 @@ def _build_persona_controller(
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
     controller = _OverlayController.alloc().init()
-    controller.configure(
-        options, scheduler, lambda: "x", get_todos, _noop_panel_actions(), app
-    )
+    controller.configure(options, scheduler, lambda: "x", get_todos, _noop_panel_actions(), app)
     controller.start()
     return controller
 
@@ -1150,12 +1148,8 @@ def test_flag_pop_effect_sets_the_full_frame_immediately_not_a_scaled_one() -> N
     does. Compares two controllers built identically except for
     `bubble_effect`, so this doesn't hardcode any pixel geometry.
     """
-    pop_controller = _build_persona_controller(
-        "whale", message_style="flag", bubble_effect="pop"
-    )
-    none_controller = _build_persona_controller(
-        "whale", message_style="flag", bubble_effect="none"
-    )
+    pop_controller = _build_persona_controller("whale", message_style="flag", bubble_effect="pop")
+    none_controller = _build_persona_controller("whale", message_style="flag", bubble_effect="none")
     try:
         _run_ticks(pop_controller, 90)
         _run_ticks(none_controller, 90)
