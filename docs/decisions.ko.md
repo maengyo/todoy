@@ -192,3 +192,27 @@
 ### 검증
 
 `uv run pytest -q`(186개 통과), `uv run ruff check .` + `uv run ruff format --check .`(클린), `uv build`(sdist+wheel 빌드, wheel `METADATA`를 직접 확인해 `License-Expression: MIT`와 classifier 목록 검증), `uv run python -c "import todoy"`, 그리고 두 워크플로 YAML 파일을 `pyyaml`로 파싱해 검증했다(프로젝트 의존성으로 추가하지 않고 `uv run --with pyyaml`로 일회성 설치). CI의 각 job 단계가 실행할 명령(`uv sync --dev`, `uv sync --dev --extra overlay`, overlay import 체크)도 이 머신에서 직접 손으로 먼저 실행해 `ci.yml`에 커밋하기 전에 동작을 확인했다; 워크플로 자체를 실제 GitHub Actions 러너로 실행하지는 못했다.
+
+## M15 — 2026-08-23 (이슈 #19: 캐릭터별 말투 + 컴팩트하게 따라다니는 말풍선)
+
+- **캐릭터별 메시지 보이스**: `Character.voice`가 8종 보이스 팩(`knightly`,
+  `robotic`, `spooky`, `bouncy`, `salty`, `breezy`, `feline`, `gamer`) +
+  `default` 중 하나를 선택. `messages.taunt`에 키워드 전용 `voice` 추가,
+  보이스별 영/한 잔소리·축하 풀과 안전한 기본 풀 폴백. 카탈로그 28종 전원
+  명시적 매핑. 영어 문구는 단복수 안전(1개든 N개든 자연스러움); 톤 원칙
+  유지(할 일을 놀리되 사람은 공격 안 함). CLI → `OverlayOptions.voice` →
+  모든 리마인드/깃발/알람 빌더로 연결.
+- **말풍선 라이드얼롱**: 말풍선이 처음 나타난 자리에 머물지 않고 매 배회
+  틱마다 캐릭터 위치를 따라 이동(지상 존은 위, 하늘 존은 아래에 매달리며
+  꼬리가 위로 뒤집힘). 화면 안으로 클램프되어도 그려진 꼬리는 항상 캐릭터를
+  가리킴(순수 수학은 `display/overlay/bubblelayout.py`, 전 OS CI 테스트).
+  라이브 실측 이탈: 210틱 동안 0.000px.
+- **컴팩트 높이**: 텍스트 영역을 고정 132px 대신 매 표시마다 실측
+  (실제 줄바꿈 폭 boundingRect + 4px 여유, 22–132px 클램프) — 할 일 1개
+  말풍선 전체 높이 200px → 125px.
+- **등장 효과 vs 라이드얼롱**: 윈도우 프레임은 30fps 틱이 독점 소유(깃발
+  디싱크 교훈); 말풍선의 `pop`/`slide`는 알파 페이드로 강등, `shake`는
+  윈도우 대신 콘텐츠 뷰 bounds를 흔듦. 깃발 스타일은 기존 동작 유지.
+- 교차 리뷰: 보이스(Codex 구현)는 todoy-reviewer가 승인(지적 7건 전부 수정 —
+  특히 count=1에서 어색했던 영어 4줄), 말풍선(Claude 에이전트 구현)은 Codex가
+  승인. 테스트 1295개.

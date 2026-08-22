@@ -113,6 +113,7 @@ class _RunLoopState:
     character_name: str
     emoji: str
     language: str
+    voice: str
     interval_minutes: int
     use_emoji: bool
     terminal_run_module: Any
@@ -335,6 +336,7 @@ def _run(
     config = load_config()
     character = get_character(args.character)
     language = resolve_language(args.lang)
+    voice = character.voice
     interval_minutes = (
         args.interval if args.interval is not None else config.reminder_interval_minutes
     )
@@ -358,6 +360,7 @@ def _run(
         character_name=character.name,
         emoji=character.emoji,
         language=language,
+        voice=voice,
         interval_minutes=interval_minutes,
         use_emoji=use_emoji,
         terminal_run_module=terminal_run_module,
@@ -371,7 +374,7 @@ def _run(
         width_cols=width_cols,
         runner=terminal_run_module.TerminalRun(width_cols, character.name),
         frames=_run_frames(sprites_module, character.name, character.ascii_art),
-        flag_text=core_module.build_flag_line(get_todos(), language),
+        flag_text=core_module.build_flag_line(get_todos(), language, voice=voice),
         next_interval_at=current + timedelta(minutes=interval_minutes),
         next_width_check_at=current + timedelta(seconds=RUN_WIDTH_REFRESH_SECONDS),
     )
@@ -457,7 +460,7 @@ def _alarm_block_if_due(state: _RunLoopState, current: datetime) -> str | None:
     due = state.alarm_clock.due()
     if not due:
         return None
-    return state.core_module.build_alarm_text(due, state.language)
+    return state.core_module.build_alarm_text(due, state.language, voice=state.voice)
 
 
 def _reminder_block_if_due(state: _RunLoopState, current: datetime) -> str | None:
@@ -465,8 +468,8 @@ def _reminder_block_if_due(state: _RunLoopState, current: datetime) -> str | Non
         return None
     state.next_interval_at = current + timedelta(minutes=state.interval_minutes)
     todos = state.get_todos()
-    state.flag_text = state.core_module.build_flag_line(todos, state.language)
-    return state.core_module.build_reminder_text(todos, state.language)
+    state.flag_text = state.core_module.build_flag_line(todos, state.language, voice=state.voice)
+    return state.core_module.build_reminder_text(todos, state.language, voice=state.voice)
 
 
 def _run_frames(sprites_module: Any, character_name: str, fallback: str) -> tuple[str, ...]:
@@ -651,14 +654,15 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
 
     core_module = importlib.import_module("todoy.display.overlay.core")
     build_reminder_text = core_module.build_reminder_text
+    character = get_character(args.character if args.character is not None else config.character)
+    voice = character.voice
 
     if args.once:
         builtin_todos, non_builtin_todos = _collect_todos(include_done=False, config=config)
-        print(build_reminder_text([*builtin_todos, *non_builtin_todos], language))
+        print(build_reminder_text([*builtin_todos, *non_builtin_todos], language, voice=voice))
         return 0
 
     base_module = importlib.import_module("todoy.display.overlay.base")
-    character = get_character(args.character if args.character is not None else config.character)
     movement = _resolve_overlay_movement(configured_movement, character.name, animations_module)
     message_style = _resolve_overlay_message_style(
         configured_message_style,
@@ -676,6 +680,7 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
         test_seconds=_overlay_test_seconds(),
         sprite_name=sprite_name,
         sprite_folder=config.character_sprites,
+        voice=voice,
         movement=movement,
         bubble_effect=bubble_effect,
         message_style=message_style,
@@ -692,7 +697,7 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
         return [*builtin_todos, *non_builtin_todos]
 
     def get_reminder_text() -> str:
-        return build_reminder_text(get_todos(), language)
+        return build_reminder_text(get_todos(), language, voice=voice)
 
     actions = _build_panel_actions(base_module, config)
     return backend.run(options, scheduler, get_reminder_text, get_todos, actions)

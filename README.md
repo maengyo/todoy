@@ -156,6 +156,10 @@ $ todoy tui
   `--ascii` for emoji-free terminals):
 
   ![all 25 characters and their gait cycles](demo/characters.gif)
+- Every character speaks in its own voice: the knight reports open quests in
+  chivalric deadpan, the robot beeps queue counts, sea creatures talk salty,
+  the cat purrs, ghosts woooo, blocky speaks in quest-log — in both English
+  and Korean.
 - Messages tease your todos, never you. The character reminds — finishing them is still your job.
 
 ### A character on your desktop (`todoy overlay`, macOS)
@@ -190,9 +194,10 @@ edit your config yourself. Deliberate friction is the feature.
   `todoy overlay --movement gallop --message-style flag --character horse`
   makes a horse gallop across your screen carrying your todos on a flag.
   Movements: `walk` (default) / `hop` / `float` / `dash` / `gallop` / `still`.
-  Message styles: `bubble` (default: full details, stays put) / `flag` (one
-  essential line on a small fluttering pennant that rides along with the
-  character). Entrance effects: `--bubble-effect pop` (default) / `fade` /
+  Message styles: `bubble` (default: full details; sized to its content and
+  riding along with the character, speech tail always pointing at it) /
+  `flag` (one essential line on a small fluttering pennant that rides along
+  with the character). Entrance effects: `--bubble-effect pop` (default) / `fade` /
   `slide` / `shake` / `none`. Set them permanently via `movement` /
   `message_style` / `bubble_effect` under `[display]` in the config.
 - `todoy overlay --once` prints the reminder text to stdout without any GUI

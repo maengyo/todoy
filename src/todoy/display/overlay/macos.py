@@ -23,6 +23,7 @@ import objc
 
 from todoy.display import sanitize_text
 from todoy.display.overlay.animations import GALLOP_HOP_PEAK_HEIGHT_PX, CharacterMovement
+from todoy.display.overlay.bubblelayout import bubble_text_height, clamp_bubble_x, tail_offset_x
 from todoy.display.overlay.core import (
     AlarmClock,
     build_alarm_flag_line,
@@ -67,7 +68,6 @@ BUBBLE_EFFECT_DURATION_SECONDS = 0.22  # pop/fade/slide entrance animations
 BUBBLE_SHAKE_OSCILLATIONS = 3
 BUBBLE_SHAKE_AMPLITUDE_PX = 8.0
 BUBBLE_SHAKE_STEP_SECONDS = 0.04
-BUBBLE_SLIDE_RISE_PX = 20.0
 
 CHARACTER_MAX_IMAGE_PX = 96.0
 CHARACTER_WINDOW_SIZE = 110.0
@@ -116,15 +116,20 @@ GALLOP_SQUASH_SCALE_MIN = 0.95
 GALLOP_SQUASH_SCALE_MAX = 1.05
 
 BUBBLE_WIDTH = 320.0
-# Deliberately NOT shrunk by the UI-polish compaction below: measured
-# against `_build_reminder_attributed_text`'s real `boundingRectWithSize_
-# options_` at BUBBLE_WIDTH, a common case (5 todos with reasonably
-# descriptive text) already needs ~125-143px depending on which taunt gets
-# picked (some wrap to 2 lines) -- shrinking this constant further clips
-# real content, which the compaction's own "same content" goal rules out.
-# All the actual height savings come from BUBBLE_PADDING/BUBBLE_BUTTON_ROW_
-# HEIGHT/the taunt font below instead.
-BUBBLE_TEXT_HEIGHT = 132.0
+# Dynamic text height (M15 Task 39, user feedback: "메시지 세로 너비도 너무
+# 넓어"): each fire measures its own attributed text (`boundingRectWithSize_
+# options_` at the wrap width `BUBBLE_WIDTH - 2*BUBBLE_PADDING`) and sizes
+# the panel to `bubblelayout.bubble_text_height(measured + slack, MIN, MAX)`.
+# MAX keeps the pre-M15 fixed height as the ceiling (measured: a common
+# 5-todo fire already needs ~125-143px depending on which taunt wraps --
+# shrinking the ceiling clips real content); MIN is one taunt line
+# (14pt semibold, ~17px) plus breathing room, so a 1-todo fire gets a
+# visibly compact bubble instead of a mostly-empty 132px slab.
+BUBBLE_TEXT_MAX_HEIGHT = 132.0
+BUBBLE_TEXT_MIN_HEIGHT = 22.0
+# Added to the measured (fractional) text height before clamping so the last
+# line's descenders never sit flush against the button row.
+BUBBLE_TEXT_MEASURE_SLACK = 4.0
 # UI-polish compaction (user feedback: "the bubble panel is too tall and
 # the buttons are too big"): padding trimmed 18->12px, tighter line
 # spacing in `_build_reminder_attributed_text`, and a smaller button row
@@ -139,12 +144,22 @@ PANEL_CORNER_RADIUS = 16.0
 PANEL_FILL_ALPHA = 0.97
 PANEL_BORDER_ALPHA = 0.55
 
-# A real drawn speech-bubble tail (NSBezierPath), pointing straight down at
-# the character below. The window is taller than the panel by the tail's
-# height; the panel occupies the top `BUBBLE_HEIGHT` px, the tail the bottom
-# strip, centered on the panel's (and the character's) x.
+# A real drawn speech-bubble tail (NSBezierPath), pointing at the character:
+# straight down for ground/water personas (bubble above the character; the
+# panel occupies the top of the window, the tail the bottom strip) and
+# straight UP for sky personas (bubble below the character -- M15 Task 39;
+# the panel occupies the bottom, the tail the top strip). The tail's tip
+# chases the character's center x every wander tick
+# (`bubblelayout.tail_offset_x`) instead of sitting fixed at the panel's
+# center, so it keeps pointing at the character even when the window is
+# pinned at a screen edge.
 BUBBLE_TAIL_HEIGHT = 12.0
 BUBBLE_TAIL_WIDTH = 22.0
+# How close (in the window's local x) the tail tip may get to the panel's
+# sides: past `PANEL_CORNER_RADIUS + BUBBLE_TAIL_WIDTH / 2` the tail's base
+# would start eating into the rounded corners' arcs and corrupt the outline
+# path, so keep one extra point of clearance beyond that.
+BUBBLE_TAIL_MARGIN = PANEL_CORNER_RADIUS + BUBBLE_TAIL_WIDTH / 2.0 + 1.0
 
 # Buttons: Snooze is the prominent accent action, Quit is a quiet text button.
 # (`bubble` message style only -- `flag` below has no buttons at all.)
@@ -156,7 +171,8 @@ BUBBLE_TAIL_WIDTH = 22.0
 BUTTON_HEIGHT = 24.0
 BUBBLE_BUTTON_GAP_ABOVE = 8.0
 BUBBLE_BUTTON_ROW_HEIGHT = BUTTON_HEIGHT + BUBBLE_BUTTON_GAP_ABOVE
-BUBBLE_HEIGHT = BUBBLE_TEXT_HEIGHT + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING * 2
+# The panel (and window) height is no longer a module constant: it depends
+# on each fire's measured text height -- see `_build_bubble_window`.
 BUTTON_CORNER_RADIUS = 7.0
 SNOOZE_BUTTON_WIDTH = 140.0
 QUIT_BUTTON_WIDTH = 76.0
@@ -326,6 +342,13 @@ class _OverlayController(AppKit.NSObject):
         self.char_view: _CharacterView | None = None
         self.bubble_window: AppKit.NSWindow | None = None
         self.bubble_text_field: AppKit.NSTextField | None = None
+        # The `bubble` style's content view (rebuilt fresh each fire, since
+        # the panel height depends on that fire's measured text -- see
+        # `_build_bubble_window`); `None` for `flag`/banner. Kept so the
+        # per-tick ride-along can update the drawn tail's tip x
+        # (`_update_bubble_tail`) and the shake effect can wiggle the
+        # CONTENT (bounds origin) instead of the window frame.
+        self.bubble_panel_view: _MessagePanelView | None = None
         # Set only while a `flag`-style message window is on screen (rebuilt
         # fresh -- see `_build_flag_window` -- each time one fires, since its
         # width depends on that fire's text); `None` for `bubble`.
@@ -337,9 +360,9 @@ class _OverlayController(AppKit.NSObject):
         self.flutter_timer: AppKit.NSTimer | None = None
         self._flutter_start: float = 0.0
         # `_message_base_origin` is where the message window rests with no
-        # shake applied: for `flag`, refreshed every wander tick so it rides
-        # along with the character; for `bubble`, set once at show time and
-        # left alone (stays put until hidden), per the message-style contract.
+        # shake applied -- for BOTH styles refreshed every wander tick so
+        # the message rides along with the character (M15 Task 39; `bubble`
+        # used to be set once at show time and left where it appeared).
         self._message_base_origin: AppKit.NSPoint | None = None
         # Current shake wiggle, added on top of `_message_base_origin` when
         # painting the window -- 0.0 when no shake is in progress. Keeping
@@ -798,14 +821,14 @@ class _OverlayController(AppKit.NSObject):
         self._apply_character_orientation(y_offset, extra_scale=scale)
         self._advance_sprite_animation(x, y_offset)
 
-        # Only `flag`/banner rides along with the character every tick;
-        # `bubble` appears at show-time position and stays put until
-        # hidden, per the message-style contract.
-        if (
-            self.bubble_window is not None
-            and self.bubble_window.isVisible()
-            and self.options.message_style == "flag"
-        ):
+        # EVERY message style rides along with the character each tick
+        # (M15 Task 39 -- `bubble` used to appear at its show-time position
+        # and stay put, which the user read as a bug: "메시지가 캐릭터를
+        # 따라 안움직이고"). The window FRAME is owned exclusively by this
+        # tick (plus `flag`'s legacy frame-offset shake): no Core Animation
+        # ever targets it -- see `_apply_bubble_entrance_effect` for the
+        # whale-desync lesson behind that rule.
+        if self.bubble_window is not None and self.bubble_window.isVisible():
             self._refresh_message_base_origin()
             self._apply_message_window_frame()
 
@@ -898,7 +921,9 @@ class _OverlayController(AppKit.NSObject):
     def _show_reminder(self) -> None:
         self._showing_alarm = False
         if self.options.message_style == "flag":
-            text = build_flag_line(self.get_todos(), self.options.language)
+            text = build_flag_line(
+                self.get_todos(), self.options.language, voice=self.options.voice
+            )
         else:
             text = self.get_reminder_text()
         self._show_message(text)
@@ -907,9 +932,9 @@ class _OverlayController(AppKit.NSObject):
     def _show_alarm(self, due_todos: list[Todo]) -> None:
         self._showing_alarm = True
         if self.options.message_style == "flag":
-            text = build_alarm_flag_line(due_todos, self.options.language)
+            text = build_alarm_flag_line(due_todos, self.options.language, voice=self.options.voice)
         else:
-            text = build_alarm_text(due_todos, self.options.language)
+            text = build_alarm_text(due_todos, self.options.language, voice=self.options.voice)
         self._show_message(text)
 
     @objc.python_method
@@ -922,11 +947,7 @@ class _OverlayController(AppKit.NSObject):
             else:
                 self._build_flag_window(text)
         else:
-            if self.bubble_window is None:
-                self._build_bubble_window()
-            assert self.bubble_window is not None
-            assert self.bubble_text_field is not None
-            self.bubble_text_field.setAttributedStringValue_(_build_reminder_attributed_text(text))
+            self._build_bubble_window(text)
         self._refresh_message_base_origin()
         self._apply_message_window_frame()
         self._apply_bubble_entrance_effect()
@@ -961,9 +982,45 @@ class _OverlayController(AppKit.NSObject):
         self.flourish = None if flourish.finished else flourish
 
     @objc.python_method
-    def _build_bubble_window(self) -> None:
-        panel_bottom = BUBBLE_TAIL_HEIGHT
-        window_height = BUBBLE_HEIGHT + panel_bottom
+    def _measured_bubble_text_height(self, attributed: AppKit.NSAttributedString) -> float:
+        """This fire's panel text height: the attributed text measured at
+        the bubble's wrap width, plus descender slack, clamped into
+        `[BUBBLE_TEXT_MIN_HEIGHT, BUBBLE_TEXT_MAX_HEIGHT]` (M15 Task 39 --
+        a 1-todo fire gets a visibly compact bubble instead of the old
+        fixed 132px slab).
+        """
+        wrap_width = BUBBLE_WIDTH - BUBBLE_PADDING * 2
+        rect = attributed.boundingRectWithSize_options_(
+            Foundation.NSMakeSize(wrap_width, 100000.0),
+            AppKit.NSStringDrawingUsesLineFragmentOrigin,
+        )
+        measured = math.ceil(rect.size.height) + BUBBLE_TEXT_MEASURE_SLACK
+        return bubble_text_height(measured, BUBBLE_TEXT_MIN_HEIGHT, BUBBLE_TEXT_MAX_HEIGHT)
+
+    @objc.python_method
+    def _build_bubble_window(self, text: str) -> None:
+        """Rebuild `self.bubble_window` as a `bubble` panel sized to `text`
+        (M15 Task 39). Rebuilt fresh on every fire (rather than resized in
+        place) since each fire's text -- and therefore the panel's height --
+        can differ; same rationale/cadence as `_build_flag_window`.
+
+        Sky personas (which cruise near the top of the screen and get the
+        bubble BELOW them, M13 Task 32) put the tail strip at the TOP of
+        the window pointing up at the character; everyone else keeps the
+        bottom strip pointing down.
+        """
+        attributed = _build_reminder_attributed_text(text)
+        text_height = self._measured_bubble_text_height(attributed)
+        panel_height = text_height + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING * 2
+        window_height = panel_height + BUBBLE_TAIL_HEIGHT
+        tail_at_top = self.persona.zone == "sky"
+        # Local y where the panel body starts: above the tail strip for the
+        # normal tail-below layout, at the window's bottom when the tail
+        # strip is on top -- every subview offset below builds on this.
+        panel_bottom = 0.0 if tail_at_top else BUBBLE_TAIL_HEIGHT
+
+        if self.bubble_window is not None:
+            self.bubble_window.orderOut_(None)
 
         frame = Foundation.NSMakeRect(0, 0, BUBBLE_WIDTH, window_height)
         window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -983,15 +1040,17 @@ class _OverlayController(AppKit.NSObject):
 
         content = _MessagePanelView.alloc().initWithFrame_(frame)
         content.panel_bottom = panel_bottom
+        content.tail_at_top = tail_at_top
+        content.tail_tip_x = BUBBLE_WIDTH / 2.0
 
-        # The panel content (text + Snooze/Quit), shifted up by
-        # `panel_bottom` (the bubble's tail) at the bottom of the view.
+        # The panel content (text + Snooze/Quit), offset by `panel_bottom`
+        # (0 when the tail strip is on top instead of below the panel).
         text_field = AppKit.NSTextField.alloc().initWithFrame_(
             Foundation.NSMakeRect(
                 BUBBLE_PADDING,
                 panel_bottom + BUBBLE_BUTTON_ROW_HEIGHT + BUBBLE_PADDING,
                 BUBBLE_WIDTH - BUBBLE_PADDING * 2,
-                BUBBLE_TEXT_HEIGHT,
+                text_height,
             )
         )
         text_field.setEditable_(False)
@@ -1000,6 +1059,7 @@ class _OverlayController(AppKit.NSObject):
         text_field.setDrawsBackground_(False)
         text_field.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
         text_field.cell().setWraps_(True)
+        text_field.setAttributedStringValue_(attributed)
         content.addSubview_(text_field)
 
         snooze_label = f"Snooze {self.scheduler.snooze_minutes}m"
@@ -1029,14 +1089,18 @@ class _OverlayController(AppKit.NSObject):
 
         self.bubble_window = window
         self.bubble_text_field = text_field
+        self.bubble_panel_view = content
+        self.flag_view = None
 
     @objc.python_method
     def _compute_message_origin(self) -> AppKit.NSPoint | None:
         """The message window's resting origin (no shake offset applied).
 
-        For `flag`/banner this is clamped to the screen (contract: "the
-        flag/banner must stay fully on screen"); `bubble` is left
-        unclamped, matching its pre-existing behavior.
+        Both styles are clamped fully on-screen: `flag`/banner via
+        `_clamp_x_to_screen` (unchanged), `bubble` via
+        `bubblelayout.clamp_bubble_x` (M15 Task 39 -- it rides along now,
+        so near a screen edge it pins there while the drawn tail keeps
+        chasing the character, see `_update_bubble_tail`).
 
         Vertical placement (M13 Task 32, contract section 2):
         - `flag` + `persona.banner`: hangs BELOW the character (two
@@ -1059,18 +1123,26 @@ class _OverlayController(AppKit.NSObject):
             else:
                 y = char_frame.origin.y + char_frame.size.height + FLAG_GAP_ABOVE_CHARACTER
             x = self._clamp_x_to_screen(x, window_width)
-        elif self.persona.zone == "sky":
-            y = char_frame.origin.y - window_frame.size.height - BUBBLE_GAP_BELOW_CHARACTER
         else:
-            y = char_frame.origin.y + char_frame.size.height + BUBBLE_GAP_ABOVE_CHARACTER
+            if self.persona.zone == "sky":
+                y = char_frame.origin.y - window_frame.size.height - BUBBLE_GAP_BELOW_CHARACTER
+            else:
+                y = char_frame.origin.y + char_frame.size.height + BUBBLE_GAP_ABOVE_CHARACTER
+            screen_frame = self._screen_frame()
+            x = clamp_bubble_x(
+                char_frame.origin.x + char_frame.size.width / 2,
+                window_width,
+                screen_frame.origin.x,
+                screen_frame.origin.x + screen_frame.size.width,
+            )
 
         return Foundation.NSMakePoint(x, y)
 
     @objc.python_method
     def _refresh_message_base_origin(self) -> None:
         """Recompute and store `self._message_base_origin` from the
-        character's current position. Call at show-time (both styles) and,
-        for `flag` only, on every wander tick -- see `onWanderTick_`.
+        character's current position. Called at show-time and, for both
+        styles, on every wander tick -- see `onWanderTick_`.
         """
         origin = self._compute_message_origin()
         if origin is not None:
@@ -1078,21 +1150,56 @@ class _OverlayController(AppKit.NSObject):
 
     @objc.python_method
     def _apply_message_window_frame(self) -> None:
-        """Paint `self.bubble_window` at `_message_base_origin` plus any
-        active shake offset, re-clamping to the screen for `flag` every
-        time -- so a shake near a screen edge can never push the flag off
-        screen, even mid-oscillation.
+        """Paint `self.bubble_window` at `_message_base_origin`.
+
+        `flag` additionally applies any active shake offset to the frame
+        (its pre-M15 behavior, unchanged), re-clamping to the screen every
+        time so a shake near a screen edge can never push the flag off
+        screen, even mid-oscillation. `bubble`'s shake never touches the
+        frame (it wiggles the content view instead -- see
+        `_fire_bubble_shake_step`); its base origin is already clamped by
+        `_compute_message_origin`, and after each frame set the drawn tail
+        tip is re-aimed at the character (`_update_bubble_tail`).
         """
         window = self.bubble_window
         base = self._message_base_origin
         if window is None or base is None:
             return
 
-        x = base.x + self._shake_offset_px
+        x = base.x
         if self.options.message_style == "flag":
-            x = self._clamp_x_to_screen(x, window.frame().size.width)
+            x = self._clamp_x_to_screen(x + self._shake_offset_px, window.frame().size.width)
 
         window.setFrameOrigin_(Foundation.NSMakePoint(x, base.y))
+        if self.options.message_style != "flag":
+            self._update_bubble_tail()
+
+    @objc.python_method
+    def _update_bubble_tail(self) -> None:
+        """Aim the drawn tail's tip at the character's center x (in the
+        bubble window's local coordinates), redrawing only when it actually
+        moved -- called after every ride-along frame set, so a bubble
+        pinned at a screen edge keeps pointing at the character as it
+        walks (M15 Task 39, `bubblelayout.tail_offset_x`).
+        """
+        view = self.bubble_panel_view
+        window = self.bubble_window
+        char_window = self.char_window
+        if view is None or window is None or char_window is None:
+            return
+        char_frame = char_window.frame()
+        window_frame = window.frame()
+        tip_x = tail_offset_x(
+            char_frame.origin.x + char_frame.size.width / 2,
+            window_frame.origin.x,
+            window_frame.size.width,
+            BUBBLE_TAIL_WIDTH,
+            BUBBLE_TAIL_MARGIN,
+        )
+        if abs(view.tail_tip_x - tip_x) < 0.1:
+            return
+        view.tail_tip_x = tip_x
+        view.setNeedsDisplay_(True)
 
     @objc.python_method
     def _clamp_x_to_screen(self, x: float, width: float) -> float:
@@ -1109,42 +1216,38 @@ class _OverlayController(AppKit.NSObject):
         """Show `self.bubble_window` using `self.options.bubble_effect`.
 
         `_apply_message_window_frame()` must already have set the window's
-        *target* frame before this runs. pop/fade/slide animate via
+        *target* frame before this runs. `fade` (which `pop`/`slide` are
+        degraded to, see below) animates alpha only via
         `NSAnimationContext` (<= `BUBBLE_EFFECT_DURATION_SECONDS`); shake
         appears instantly and then wiggles horizontally with chained
         one-shot `NSTimer`s; none appears instantly with no animation.
 
-        Bug fix (user report: "고래를 보면 메시지가 캐릭터를 안따라가" --
-        reproduced with whale + `flag` style): `flag`/banner windows ride
-        along with the character every ~33ms wander tick
+        Whale-desync lesson (user report: "고래를 보면 메시지가 캐릭터를
+        안따라가" -- originally reproduced with whale + `flag` style):
+        `pop`/`slide` used to drive the window's FRAME through
+        `.animator()`, which schedules its own
+        ~`BUBBLE_EFFECT_DURATION_SECONDS`-long wall-clock Core Animation
+        on that same window -- competing with every ~33ms ride-along tick
         (`onWanderTick_` -> `_apply_message_window_frame` ->
-        `setFrameOrigin_`, a direct/instant set). `pop` and `slide` drive
-        the window's FRAME through `.animator()`, which schedules its own
-        ~`BUBBLE_EFFECT_DURATION_SECONDS`-long implicit Core Animation on
-        that same window -- competing with every ride-along tick during
-        that window, so the message visibly freezes/lags behind a moving
-        character (worst on a constantly-walking persona like whale) until
-        the animation finishes and the two reconcile. `fade`/`shake`/`none`
-        never touch the frame via `.animator()` and were never affected.
-        For a riding-along style, `pop`/`slide` are downgraded to `fade`'s
-        alpha-only entrance (frame set once, directly, to the target --
-        never interpolated) so there is nothing left to fight the ride-along
-        ticks; `bubble` (which shows once and stays put) is unaffected.
+        `setFrameOrigin_`, a direct/instant set), so the message visibly
+        froze/lagged behind a moving character until the two reconciled.
+        Since M15 Task 39 BOTH styles ride along, so the rule is global
+        now: the window frame is owned exclusively by the tick, and
+        `pop`/`slide` degrade to `fade`'s alpha-only entrance (frame set
+        once, directly, to the target -- never interpolated; degrading is
+        explicitly permitted by the M15 contract). `fade`/`none` are
+        unchanged, and `shake` never used Core Animation -- but for
+        `bubble` its wiggle is re-expressed on the CONTENT (the view's
+        bounds origin) rather than the window frame, see
+        `_fire_bubble_shake_step`; `flag` keeps its pre-M15 frame-offset
+        shake ("flag style: unchanged").
         """
         window = self.bubble_window
         assert window is not None
         effect = self.options.bubble_effect
-        if self.options.message_style == "flag" and effect in ("pop", "slide"):
+        if effect in ("pop", "slide"):
             effect = "fade"
         target_frame = window.frame()
-
-        if effect == "pop":
-            window.setAlphaValue_(1.0)
-            window.setFrame_display_(_scaled_frame(target_frame, 0.85), False)
-            window.orderFrontRegardless()
-            with _animation_group(BUBBLE_EFFECT_DURATION_SECONDS):
-                window.animator().setFrame_display_(target_frame, True)
-            return
 
         if effect == "fade":
             window.setAlphaValue_(0.0)
@@ -1152,21 +1255,6 @@ class _OverlayController(AppKit.NSObject):
             window.orderFrontRegardless()
             with _animation_group(BUBBLE_EFFECT_DURATION_SECONDS):
                 window.animator().setAlphaValue_(1.0)
-            return
-
-        if effect == "slide":
-            start_frame = Foundation.NSMakeRect(
-                target_frame.origin.x,
-                target_frame.origin.y - BUBBLE_SLIDE_RISE_PX,
-                target_frame.size.width,
-                target_frame.size.height,
-            )
-            window.setAlphaValue_(0.0)
-            window.setFrame_display_(start_frame, False)
-            window.orderFrontRegardless()
-            with _animation_group(BUBBLE_EFFECT_DURATION_SECONDS):
-                window.animator().setAlphaValue_(1.0)
-                window.animator().setFrame_display_(target_frame, True)
             return
 
         if effect == "shake":
@@ -1183,13 +1271,19 @@ class _OverlayController(AppKit.NSObject):
 
     @objc.python_method
     def _start_bubble_shake(self) -> None:
-        """Begin the shake wiggle around the *current* `_message_base_origin`.
+        """Begin the shake wiggle.
 
-        Each step just sets `_shake_offset_px` and repaints via
-        `_apply_message_window_frame()`, which re-derives the base origin
-        (updated live every wander tick for `flag`) and re-clamps to the
-        screen -- so a `flag` shake tracks a moving/galloping character and
-        never wiggles the window off screen.
+        Each step just sets `_shake_offset_px` and applies it via
+        `_apply_shake_offset`: for `flag` that repaints the window frame
+        through `_apply_message_window_frame()` (which re-derives the base
+        origin -- updated live every wander tick -- and re-clamps to the
+        screen, so a shake tracks a moving character and never wiggles the
+        window off screen; pre-M15 behavior, unchanged); for `bubble` --
+        whose window frame is owned exclusively by the ride-along tick
+        since M15 Task 39 -- the wiggle is re-expressed on the CONTENT by
+        shifting the panel view's bounds origin, which never touches the
+        window frame at all (and involves no Core Animation, per the
+        whale-desync lesson in `_apply_bubble_entrance_effect`).
         """
         self._shake_step_index = 0
         self._shake_offset_px = 0.0
@@ -1203,12 +1297,12 @@ class _OverlayController(AppKit.NSObject):
         total_steps = BUBBLE_SHAKE_OSCILLATIONS * 2
         if self._shake_step_index >= total_steps:
             self._shake_offset_px = 0.0
-            self._apply_message_window_frame()
+            self._apply_shake_offset()
             return
 
         direction = 1.0 if self._shake_step_index % 2 == 0 else -1.0
         self._shake_offset_px = direction * BUBBLE_SHAKE_AMPLITUDE_PX
-        self._apply_message_window_frame()
+        self._apply_shake_offset()
         self._shake_step_index += 1
 
         self.shake_timer = (
@@ -1221,13 +1315,29 @@ class _OverlayController(AppKit.NSObject):
         self._fire_bubble_shake_step()
 
     @objc.python_method
+    def _apply_shake_offset(self) -> None:
+        """Apply the current `_shake_offset_px` -- to the window frame for
+        `flag`, to the content view's bounds origin for `bubble` (see
+        `_start_bubble_shake`). A bounds-origin of (-offset, 0) shifts the
+        drawn panel and its subviews `offset` points to the right.
+        """
+        if self.options.message_style == "flag":
+            self._apply_message_window_frame()
+            return
+        view = self.bubble_panel_view
+        if view is None:
+            return
+        view.setBoundsOrigin_(Foundation.NSMakePoint(-self._shake_offset_px, 0.0))
+        view.setNeedsDisplay_(True)
+
+    @objc.python_method
     def _cancel_bubble_shake(self) -> None:
         if self.shake_timer is not None:
             self.shake_timer.invalidate()
             self.shake_timer = None
         if self._shake_offset_px != 0.0:
             self._shake_offset_px = 0.0
-            self._apply_message_window_frame()
+            self._apply_shake_offset()
 
     @objc.python_method
     def _reset_hide_timer(self) -> None:
@@ -1304,6 +1414,7 @@ class _OverlayController(AppKit.NSObject):
 
         self.bubble_window = window
         self.bubble_text_field = None
+        self.bubble_panel_view = None
         self.flag_view = content
 
     @objc.python_method
@@ -1350,6 +1461,7 @@ class _OverlayController(AppKit.NSObject):
 
         self.bubble_window = window
         self.bubble_text_field = None
+        self.bubble_panel_view = None
         # Reused as the generic flutter-target attribute -- `_apply_flutter_
         # frame` only needs `.flutter_offset`/`setNeedsDisplay_`, which both
         # `_FlagPanelView` and `_BannerPanelView` provide.
@@ -1757,15 +1869,6 @@ def _menu_bar_clearance_px(screen_frame: AppKit.NSRect, visible_frame: AppKit.NS
     return max(0.0, top - visible_top)
 
 
-def _scaled_frame(frame: AppKit.NSRect, scale: float) -> AppKit.NSRect:
-    """`frame` shrunk/grown by `scale`, keeping the same center point."""
-    new_width = frame.size.width * scale
-    new_height = frame.size.height * scale
-    new_x = frame.origin.x + (frame.size.width - new_width) / 2.0
-    new_y = frame.origin.y + (frame.size.height - new_height) / 2.0
-    return Foundation.NSMakeRect(new_x, new_y, new_width, new_height)
-
-
 def _build_status_menu(controller: _OverlayController) -> AppKit.NSMenu:
     """The status item's right-click menu: a single "Quit todoy" item,
     wired to the same `onQuitClicked_` the bubble's Quit button uses --
@@ -1983,26 +2086,49 @@ def _build_reminder_attributed_text(text: str) -> AppKit.NSAttributedString:
 class _MessagePanelView(AppKit.NSView):
     """`bubble` message-window content: a rounded-rect panel (holding the
     reminder text + Snooze/Quit buttons, added as subviews by the caller)
-    occupying the top `bounds.height - panel_bottom` of the view, with a real
-    speech-bubble tail (an `NSBezierPath` triangle merged into the panel
-    outline) pointing straight down at the character below.
+    with a real speech-bubble tail (an `NSBezierPath` triangle merged into
+    the panel outline) pointing at the character. Ground/water layout: the
+    panel occupies the top `bounds.height - panel_bottom` of the view and
+    the tail points straight DOWN from its bottom edge (the bubble sits
+    above the character). Sky layout (`tail_at_top`, M15 Task 39): the
+    panel occupies the bottom of the view and the tail points UP from its
+    top edge (the bubble hangs below a sky character).
+
+    `tail_tip_x` is the tail tip's x in local coordinates, re-aimed at the
+    character every ride-along tick (`_OverlayController._update_bubble_
+    tail`) so the tail keeps pointing at it even when the window is pinned
+    at a screen edge.
 
     `flag`'s compact pennant is a different, unrelated content view -- see
     `_FlagPanelView` below.
     """
 
     panel_bottom: float = 0.0
+    tail_at_top: bool = False
+    tail_tip_x: float = BUBBLE_WIDTH / 2.0
 
     def drawRect_(self, rect: AppKit.NSRect) -> None:
         bounds = self.bounds()
-        panel_rect = Foundation.NSMakeRect(
-            0.0,
-            self.panel_bottom,
-            bounds.size.width,
-            bounds.size.height - self.panel_bottom,
-        )
+        if self.tail_at_top:
+            panel_rect = Foundation.NSMakeRect(
+                0.0,
+                0.0,
+                bounds.size.width,
+                bounds.size.height - BUBBLE_TAIL_HEIGHT,
+            )
+            apex_y = bounds.size.height
+        else:
+            panel_rect = Foundation.NSMakeRect(
+                0.0,
+                self.panel_bottom,
+                bounds.size.width,
+                bounds.size.height - self.panel_bottom,
+            )
+            apex_y = 0.0
 
-        path = _bubble_tail_path(panel_rect, PANEL_CORNER_RADIUS, BUBBLE_TAIL_WIDTH)
+        path = _bubble_tail_path(
+            panel_rect, PANEL_CORNER_RADIUS, BUBBLE_TAIL_WIDTH, self.tail_tip_x, apex_y
+        )
 
         AppKit.NSColor.windowBackgroundColor().colorWithAlphaComponent_(PANEL_FILL_ALPHA).setFill()
         path.fill()
@@ -2015,18 +2141,32 @@ class _MessagePanelView(AppKit.NSView):
         return False
 
 
-def _bubble_tail_path(rect: AppKit.NSRect, radius: float, tail_width: float) -> AppKit.NSBezierPath:
-    """A rounded-rect outline with a triangular tail merged into the bottom
-    edge, centered on `rect`'s x, pointing down from `rect`'s bottom edge to
-    the view's origin (y=0) -- toward the character below.
+def _bubble_tail_path(
+    rect: AppKit.NSRect,
+    radius: float,
+    tail_width: float,
+    tip_x: float,
+    apex_y: float,
+) -> AppKit.NSBezierPath:
+    """A rounded-rect outline with a triangular tail merged into one edge:
+    the tail's base straddles `tip_x` on `rect`'s bottom edge with its apex
+    reaching down to `apex_y` when `apex_y` is below the rect (ground
+    layout -- character underneath), or on the TOP edge reaching up when
+    `apex_y` is above it (sky layout -- character overhead). `tip_x` must
+    already be clamped clear of the corner arcs
+    (`bubblelayout.tail_offset_x` with `BUBBLE_TAIL_MARGIN`).
     """
     min_x, min_y = rect.origin.x, rect.origin.y
     max_x, max_y = min_x + rect.size.width, min_y + rect.size.height
-    mid_x = min_x + rect.size.width / 2.0
     tail_half = tail_width / 2.0
+    points_up = apex_y > max_y
 
     path = AppKit.NSBezierPath.bezierPath()
     path.moveToPoint_(Foundation.NSMakePoint(min_x + radius, max_y))
+    if points_up:
+        path.lineToPoint_(Foundation.NSMakePoint(tip_x - tail_half, max_y))
+        path.lineToPoint_(Foundation.NSMakePoint(tip_x, apex_y))
+        path.lineToPoint_(Foundation.NSMakePoint(tip_x + tail_half, max_y))
     path.lineToPoint_(Foundation.NSMakePoint(max_x - radius, max_y))
     path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
         Foundation.NSMakePoint(max_x - radius, max_y - radius), radius, 90.0, 0.0, True
@@ -2035,9 +2175,10 @@ def _bubble_tail_path(rect: AppKit.NSRect, radius: float, tail_width: float) -> 
     path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
         Foundation.NSMakePoint(max_x - radius, min_y + radius), radius, 0.0, -90.0, True
     )
-    path.lineToPoint_(Foundation.NSMakePoint(mid_x + tail_half, min_y))
-    path.lineToPoint_(Foundation.NSMakePoint(mid_x, 0.0))
-    path.lineToPoint_(Foundation.NSMakePoint(mid_x - tail_half, min_y))
+    if not points_up:
+        path.lineToPoint_(Foundation.NSMakePoint(tip_x + tail_half, min_y))
+        path.lineToPoint_(Foundation.NSMakePoint(tip_x, apex_y))
+        path.lineToPoint_(Foundation.NSMakePoint(tip_x - tail_half, min_y))
     path.lineToPoint_(Foundation.NSMakePoint(min_x + radius, min_y))
     path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
         Foundation.NSMakePoint(min_x + radius, min_y + radius), radius, -90.0, -180.0, True

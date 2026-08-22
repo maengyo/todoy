@@ -3,6 +3,38 @@ from __future__ import annotations
 import pytest
 
 from todoy.display.characters import CHARACTERS, Character, get_character
+from todoy.display.messages import _VOICES
+
+EXPECTED_CHARACTER_VOICES = {
+    "cat": "feline",
+    "dog": "default",
+    "ghost": "spooky",
+    "robot": "robotic",
+    "horse": "default",
+    "alien": "spooky",
+    "bee": "breezy",
+    "crab": "salty",
+    "dino": "default",
+    "frog": "bouncy",
+    "owl": "breezy",
+    "penguin": "salty",
+    "snail": "default",
+    "turtle": "salty",
+    "unicorn": "default",
+    "fox": "default",
+    "panda": "default",
+    "chick": "breezy",
+    "rabbit": "bouncy",
+    "hamster": "default",
+    "duck": "breezy",
+    "whale": "salty",
+    "octopus": "salty",
+    "butterfly": "breezy",
+    "dragon": "breezy",
+    "blocky": "gamer",
+    "slime": "bouncy",
+    "knight": "knightly",
+}
 
 
 def test_characters_has_at_least_four_entries() -> None:
@@ -158,6 +190,23 @@ def test_all_expected_names_present() -> None:
 
 def test_get_character_returns_character_dataclass_instance() -> None:
     assert isinstance(get_character("cat"), Character)
+
+
+def test_character_dataclass_defaults_voice_to_default() -> None:
+    character = Character(name="test", emoji="?", ascii_art="?")
+
+    assert character.voice == "default"
+
+
+@pytest.mark.parametrize("name", list(CHARACTERS))
+def test_every_character_voice_is_in_the_fixed_voice_set(name: str) -> None:
+    assert CHARACTERS[name].voice in _VOICES
+
+
+def test_every_character_has_the_expected_voice_mapping() -> None:
+    assert {name: character.voice for name, character in CHARACTERS.items()} == (
+        EXPECTED_CHARACTER_VOICES
+    )
 
 
 def test_get_character_unknown_name_raises_value_error_listing_available() -> None:

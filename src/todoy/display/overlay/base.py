@@ -55,6 +55,7 @@ class OverlayOptions:
     message_style: str = "bubble"  # one of animations.MESSAGE_STYLES
     sprite_name: str | None = None
     sprite_folder: Path | None = None
+    voice: str = "default"
 
 
 class OverlayBackend(Protocol):

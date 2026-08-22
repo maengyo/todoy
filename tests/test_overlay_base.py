@@ -78,6 +78,7 @@ def test_overlay_options_movement_and_bubble_effect_default() -> None:
     assert options.message_style == "bubble"
     assert options.sprite_name is None
     assert options.sprite_folder is None
+    assert options.voice == "default"
 
 
 def test_overlay_options_movement_and_bubble_effect_overridable() -> None:
@@ -89,11 +90,13 @@ def test_overlay_options_movement_and_bubble_effect_overridable() -> None:
         movement="hop",
         bubble_effect="shake",
         message_style="flag",
+        voice="spooky",
     )
 
     assert options.movement == "hop"
     assert options.bubble_effect == "shake"
     assert options.message_style == "flag"
+    assert options.voice == "spooky"
 
 
 # --- PanelActions: pure, AppKit-free -----------------------------------------
@@ -334,6 +337,83 @@ def test_flag_shows_single_line_pennant_text_from_build_flag_line() -> None:
         assert "\n" not in expected  # single line, per the compact-flag contract
     finally:
         controller._invalidate_all_timers()
+
+
+def test_backend_threads_options_voice_to_direct_message_builders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "darwin":
+        pytest.skip("AppKit only available on macOS")
+    pytest.importorskip("AppKit")
+
+    import AppKit
+
+    import todoy.display.overlay.macos as macos
+    from todoy.display.overlay.core import ReminderScheduler
+    from todoy.models import Todo
+
+    calls: list[tuple[str, str, tuple[str, ...], str]] = []
+
+    def build_flag_line_spy(todos: list[Todo], language: str, *, voice: str) -> str:
+        calls.append(("build_flag_line", language, tuple(todo.text for todo in todos), voice))
+        return "FLAG-REMINDER"
+
+    def build_alarm_flag_line_spy(todos: list[Todo], language: str, *, voice: str) -> str:
+        calls.append(("build_alarm_flag_line", language, tuple(todo.text for todo in todos), voice))
+        return "FLAG-ALARM"
+
+    def build_alarm_text_spy(todos: list[Todo], language: str, *, voice: str) -> str:
+        calls.append(("build_alarm_text", language, tuple(todo.text for todo in todos), voice))
+        return "BUBBLE-ALARM"
+
+    monkeypatch.setattr(macos, "build_flag_line", build_flag_line_spy)
+    monkeypatch.setattr(macos, "build_alarm_flag_line", build_alarm_flag_line_spy)
+    monkeypatch.setattr(macos, "build_alarm_text", build_alarm_text_spy)
+
+    app = AppKit.NSApplication.sharedApplication()
+    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+    reminder_todos = [Todo(text="water plants", id=1, source="builtin")]
+    due_todos = [Todo(text="회의", at="14:00", id=2, source="builtin")]
+
+    def build_controller(message_style: str):
+        options = OverlayOptions(
+            character=Character(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
+            character_image=None,
+            language="ko",
+            test_seconds=None,
+            message_style=message_style,
+            voice="robotic",
+        )
+        controller = macos._OverlayController.alloc().init()
+        controller.configure(
+            options,
+            ReminderScheduler(interval_minutes=30, snooze_minutes=5),
+            lambda: "UNUSED",
+            lambda: reminder_todos,
+            _noop_panel_actions(),
+            app,
+        )
+        shown: list[str] = []
+        controller._show_message = lambda text: shown.append(text)
+        return controller, shown
+
+    flag_controller, flag_shown = build_controller("flag")
+    bubble_controller, bubble_shown = build_controller("bubble")
+    try:
+        flag_controller._show_reminder()
+        flag_controller._show_alarm(due_todos)
+        bubble_controller._show_alarm(due_todos)
+
+        assert calls == [
+            ("build_flag_line", "ko", ("water plants",), "robotic"),
+            ("build_alarm_flag_line", "ko", ("회의",), "robotic"),
+            ("build_alarm_text", "ko", ("회의",), "robotic"),
+        ]
+        assert flag_shown == ["FLAG-REMINDER", "FLAG-ALARM"]
+        assert bubble_shown == ["BUBBLE-ALARM"]
+    finally:
+        flag_controller._invalidate_all_timers()
+        bubble_controller._invalidate_all_timers()
 
 
 def test_flag_click_snoozes_interval_reminder_and_hides_the_pennant() -> None:
@@ -1083,26 +1163,34 @@ def test_none_flourish_persona_never_sets_an_active_flourish() -> None:
         controller._invalidate_all_timers()
 
 
-def test_flourish_ticks_offset_the_character_window_without_moving_the_bubble() -> None:
+def test_flourish_ticks_move_the_bubble_along_with_the_character() -> None:
+    # M15 Task 39: the bubble rides along with the character EVERY wander
+    # tick (it used to stay where it appeared, which this test's ancestor
+    # asserted) -- a flourish tick nudges the character window, and the
+    # bubble must track it, staying glued above via the ride-along refresh.
     controller = _build_persona_controller("whale")
     try:
         _run_ticks(controller, 90)
         controller._show_reminder()
         assert controller.flourish is not None
 
-        bubble_origin_before = controller.bubble_window.frame().origin
         char_y_before = controller.char_window.frame().origin.y
+        bubble_y_before = controller.bubble_window.frame().origin.y
 
         _run_ticks(controller, 3)
 
-        char_y_after = controller.char_window.frame().origin.y
-        assert char_y_after != pytest.approx(char_y_before)  # resurface dips/pops the window
-        # The (already-shown) message window itself doesn't get relocated by
-        # a flourish tick -- only an explicit refresh (flag ride-along, or a
-        # new show) moves it.
-        bubble_origin_after = controller.bubble_window.frame().origin
-        assert bubble_origin_after.x == pytest.approx(bubble_origin_before.x)
-        assert bubble_origin_after.y == pytest.approx(bubble_origin_before.y)
+        char_frame = controller.char_window.frame()
+        bubble_frame = controller.bubble_window.frame()
+        assert char_frame.origin.y != pytest.approx(char_y_before)  # resurface dips/pops
+        # The bubble followed the character's vertical flourish nudge...
+        assert bubble_frame.origin.y != pytest.approx(bubble_y_before)
+        assert bubble_frame.origin.y == pytest.approx(
+            char_frame.origin.y + char_frame.size.height + 6.0  # BUBBLE_GAP_ABOVE_CHARACTER
+        )
+        # ...and stays centered on it horizontally (whale is mid-screen
+        # here, so no edge clamping is in play).
+        expected_x = char_frame.origin.x + char_frame.size.width / 2 - bubble_frame.size.width / 2
+        assert bubble_frame.origin.x == pytest.approx(expected_x, abs=0.5)
     finally:
         controller._invalidate_all_timers()
 
@@ -1169,28 +1257,30 @@ def test_flag_pop_effect_sets_the_full_frame_immediately_not_a_scaled_one() -> N
         none_controller._invalidate_all_timers()
 
 
-def test_flag_bubble_style_pop_effect_still_scales_the_frame() -> None:
-    # Regression guard: the downgrade is specific to a riding-along
-    # (`flag`) style -- `bubble` (shown once, then held in place) keeps its
-    # normal `pop` scale-in unchanged.
-    controller = _build_persona_controller("whale", message_style="bubble", bubble_effect="pop")
+def test_bubble_style_pop_effect_sets_the_full_frame_immediately_too() -> None:
+    # M15 Task 39: `bubble` rides along with the character every tick now,
+    # exactly like `flag` -- so the same whale-desync rule applies: the
+    # window frame is owned exclusively by the tick, and `pop` (which used
+    # to scale the FRAME in via `.animator()`) is degraded to `fade`'s
+    # alpha-only entrance. Compares against an identically-built `none`
+    # controller so no pixel geometry is hardcoded.
+    pop_controller = _build_persona_controller("whale", message_style="bubble", bubble_effect="pop")
+    none_controller = _build_persona_controller(
+        "whale", message_style="bubble", bubble_effect="none"
+    )
     try:
-        _run_ticks(controller, 90)
-        controller._show_reminder()
+        _run_ticks(pop_controller, 90)
+        _run_ticks(none_controller, 90)
+        pop_controller._show_reminder()
+        none_controller._show_reminder()
 
-        frame = controller.bubble_window.frame()
-        # `pop`'s starting frame is the target scaled to 0.85 -- smaller
-        # than the target on both axes at the instant it first appears.
-        # (The `.animator()` frame animation then grows it back out over
-        # BUBBLE_EFFECT_DURATION_SECONDS, which we don't need to wait out
-        # here -- only the untouched starting behavior matters.)
-        from todoy.display.overlay.macos import BUBBLE_HEIGHT, BUBBLE_TAIL_HEIGHT, BUBBLE_WIDTH
-
-        target_height = BUBBLE_HEIGHT + BUBBLE_TAIL_HEIGHT
-        assert frame.size.width < BUBBLE_WIDTH
-        assert frame.size.height < target_height
+        pop_frame = pop_controller.bubble_window.frame()
+        none_frame = none_controller.bubble_window.frame()
+        assert pop_frame.size.width == pytest.approx(none_frame.size.width)
+        assert pop_frame.size.height == pytest.approx(none_frame.size.height)
     finally:
-        controller._invalidate_all_timers()
+        pop_controller._invalidate_all_timers()
+        none_controller._invalidate_all_timers()
 
 
 def test_flag_tracks_a_moving_water_persona_across_direct_ticks() -> None:

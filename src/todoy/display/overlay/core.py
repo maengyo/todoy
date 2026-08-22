@@ -236,7 +236,7 @@ def _alarm_datetime(day: date, at: str) -> datetime | None:
     return datetime(day.year, day.month, day.day, hour, minute)
 
 
-def build_alarm_text(todos: list[Todo], language: Language) -> str:
+def build_alarm_text(todos: list[Todo], language: Language, *, voice: str = "default") -> str:
     """Assemble the alarm speech-bubble text for exactly the due `todos`.
 
     No taunt line, no other (non-due) todos -- just the alarm(s). A single
@@ -244,7 +244,7 @@ def build_alarm_text(todos: list[Todo], language: Language) -> str:
     width-truncated) text on its own line. Multiple simultaneous alarms each
     render as one "⏰ HH:MM text" line (also sanitized/width-truncated).
     """
-    del language  # reserved: alarm text has no localized copy today
+    del language, voice  # reserved: alarm text has no localized copy today
 
     if not todos:
         return ""
@@ -266,6 +266,8 @@ def build_reminder_text(
     todos: list[Todo],
     language: Language,
     rng: random.Random | None = None,
+    *,
+    voice: str = "default",
 ) -> str:
     """Assemble the speech-bubble text: a taunt line plus up to 5 todo lines.
 
@@ -274,7 +276,7 @@ def build_reminder_text(
     lines ("[#id] text" for builtin todos, "* text" for everything else),
     followed by "(+N more)" when the list was truncated.
     """
-    headline = taunt(len(todos), language, rng)
+    headline = taunt(len(todos), language, rng, voice=voice)
     if not todos:
         return headline
 
@@ -302,6 +304,8 @@ def build_flag_line(
     todos: list[Todo],
     language: Language,
     rng: random.Random | None = None,
+    *,
+    voice: str = "default",
 ) -> str:
     """Assemble the single-line pennant text for the compact `flag` message
     style -- the "one essential line" the character's fluttering flag rides
@@ -321,7 +325,7 @@ def build_flag_line(
     signature for parity with `build_reminder_text` and to leave room for
     future variation.
     """
-    del rng  # reserved: currently unused, see docstring
+    del rng, voice  # reserved: currently unused, see docstring
 
     if not todos:
         return _FLAG_CONGRATS[language]
@@ -334,7 +338,7 @@ def build_flag_line(
     return _assemble_truncated_line(prefix, first, suffix, FLAG_LINE_MAX_WIDTH)
 
 
-def build_alarm_flag_line(due: list[Todo], language: Language) -> str:
+def build_alarm_flag_line(due: list[Todo], language: Language, *, voice: str = "default") -> str:
     """Assemble the single-line pennant text for a fired alarm.
 
     "⏰ HH:MM text" for the first due todo, with a " (+{k})" suffix when more
@@ -342,7 +346,7 @@ def build_alarm_flag_line(due: list[Todo], language: Language) -> str:
     whole-line-fits-`FLAG_LINE_MAX_WIDTH`-columns truncation rule as
     `build_flag_line`. The compact-flag counterpart of `build_alarm_text`.
     """
-    del language  # reserved: alarm text has no localized copy today (see build_alarm_text)
+    del language, voice  # reserved: alarm text has no localized copy today
 
     if not due:
         return ""

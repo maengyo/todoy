@@ -192,3 +192,31 @@ Engineering decisions and notable modifications, newest first. Each milestone ap
 ### Verification
 
 `uv run pytest -q` (186 passed), `uv run ruff check .` + `uv run ruff format --check .` (clean), `uv build` (sdist+wheel built; wheel `METADATA` inspected directly to confirm `License-Expression: MIT` and the classifier list), `uv run python -c "import todoy"`, and both workflow YAML files parsed with `pyyaml` (pulled ephemerally via `uv run --with pyyaml`, not added as a project dependency). Every command each CI job step runs was also executed by hand on this machine first (`uv sync --dev`, `uv sync --dev --extra overlay`, the overlay import check) to confirm they work before committing them to `ci.yml`; the workflows themselves were not run through an actual GitHub Actions runner.
+
+## M15 — 2026-08-23 (issue #19: character-voiced messages + compact following bubble)
+
+- **Per-character message voices**: `Character.voice` selects one of 8 voice
+  packs (`knightly`, `robotic`, `spooky`, `bouncy`, `salty`, `breezy`,
+  `feline`, `gamer`) plus `default`; `messages.taunt` gained keyword-only
+  `voice` with per-voice en/ko taunt+congrats pools and safe fallback to the
+  default pool for unknown voices. All 28 catalog characters map explicitly.
+  English lines are count-agnostic (valid for 1 and N); tone rule unchanged
+  (tease the todos, never the person). The voice threads from the CLI through
+  `OverlayOptions.voice` into every reminder/flag/alarm builder.
+- **Bubble rides along**: the reminder bubble no longer stays where it first
+  appeared — its window frame is updated every wander tick from the character
+  position (ground zone above, sky zone hanging below with the tail flipped
+  upward), clamped on-screen with the drawn tail always pointing at the
+  character (pure math in `display/overlay/bubblelayout.py`, CI-tested on all
+  OSes). Live-measured divergence: 0.000 px over 210 ticks.
+- **Compact height**: the bubble text area is measured per fire
+  (boundingRect at the real wrap width + 4 px slack, clamped 22–132 px)
+  instead of a fixed 132 px — a 1-todo bubble dropped from 200 px to 125 px
+  total.
+- **Entrance effects vs ride-along**: the window frame is owned exclusively
+  by the 30 fps tick (the flag-desync lesson); `pop`/`slide` degrade to an
+  alpha fade for the bubble, `shake` moves the content view's bounds instead
+  of the window. The flag style keeps its previous behavior.
+- Cross-review: voices (Codex) reviewed by todoy-reviewer — approved with 7
+  findings, all fixed (notably 4 English lines that read wrong at count=1);
+  bubble work (Claude agent) reviewed by Codex — approved. 1295 tests.

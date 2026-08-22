@@ -9,7 +9,7 @@ import time
 import types
 from argparse import Namespace
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from importlib.util import find_spec
 from pathlib import Path
@@ -64,6 +64,7 @@ class FakeCharacter:
     emoji: str
     ascii_art: str
     sprite: str | None = None
+    voice: str = "default"
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ class FakeOverlayOptions:
     message_style: str
     sprite_name: str | None = None
     sprite_folder: Path | None = None
+    voice: str = "default"
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ class FakeOverlayState:
     options: FakeOverlayOptions | None = None
     scheduler: FakeReminderScheduler | None = None
     reminder_text: str | None = None
+    reminder_inputs: list[tuple[list[str], str, str]] = field(default_factory=list)
     todos: list[Todo] | None = None
     actions: FakePanelActions | None = None
 
@@ -211,8 +214,14 @@ def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     def resolve_language(lang: str | None = None) -> str:
         return lang if lang is not None else "en"
 
-    def taunt(count: int, language: str, rng: random.Random | None = None) -> str:
-        del rng
+    def taunt(
+        count: int,
+        language: str,
+        rng: random.Random | None = None,
+        *,
+        voice: str = "default",
+    ) -> str:
+        del rng, voice
         return f"{language}: {count} open"
 
     messages.resolve_language = resolve_language
@@ -221,9 +230,14 @@ def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
 
     characters = types.ModuleType("todoy.display.characters")
     available = {
-        "cat": FakeCharacter(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
-        "robot": FakeCharacter(name="robot", emoji="🤖", ascii_art="[robot]"),
-        "butterfly": FakeCharacter(name="butterfly", emoji="🦋", ascii_art="><(^.^)><"),
+        "cat": FakeCharacter(name="cat", emoji="🐱", ascii_art="(=^.^=)", voice="feline"),
+        "robot": FakeCharacter(name="robot", emoji="🤖", ascii_art="[robot]", voice="robotic"),
+        "butterfly": FakeCharacter(
+            name="butterfly",
+            emoji="🦋",
+            ascii_art="><(^.^)><",
+            voice="breezy",
+        ),
     }
 
     def get_character(name: str | None = None) -> FakeCharacter:
@@ -256,9 +270,12 @@ def install_fake_overlay_modules(
         todos: list[Todo],
         language: str,
         rng: random.Random | None = None,
+        *,
+        voice: str = "default",
     ) -> str:
         del rng
         texts = ", ".join(sanitize_text(todo.text) for todo in todos)
+        state.reminder_inputs.append(([todo.text for todo in todos], language, voice))
         return f"{language}: {texts or 'empty'}"
 
     core.ReminderScheduler = FakeReminderScheduler
@@ -290,9 +307,9 @@ class FakeRunModulesState:
 
 @dataclass
 class FakeRunCoreState:
-    flag_inputs: list[tuple[list[str], str]]
-    reminder_inputs: list[tuple[list[str], str]]
-    alarm_inputs: list[tuple[list[str], str]]
+    flag_inputs: list[tuple[list[str], str, str]]
+    reminder_inputs: list[tuple[list[str], str, str]]
+    alarm_inputs: list[tuple[list[str], str, str]]
     alarm_updates: list[list[str]]
     alarm_clock_inits: list[tuple[int, Callable[[], datetime] | None]]
 
@@ -409,19 +426,19 @@ def install_fake_run_core(
         def due(self) -> list[Todo]:
             return list(self._due)
 
-    def build_flag_line(todos: list[Todo], language: str) -> str:
+    def build_flag_line(todos: list[Todo], language: str, *, voice: str = "default") -> str:
         texts = [todo.text for todo in todos]
-        state.flag_inputs.append((texts, language))
+        state.flag_inputs.append((texts, language, voice))
         return f"flag:{language}:{','.join(texts) or 'empty'}"
 
-    def build_reminder_text(todos: list[Todo], language: str) -> str:
+    def build_reminder_text(todos: list[Todo], language: str, *, voice: str = "default") -> str:
         texts = [todo.text for todo in todos]
-        state.reminder_inputs.append((texts, language))
+        state.reminder_inputs.append((texts, language, voice))
         return f"reminder:{language}:{','.join(texts) or 'empty'}"
 
-    def build_alarm_text(todos: list[Todo], language: str) -> str:
+    def build_alarm_text(todos: list[Todo], language: str, *, voice: str = "default") -> str:
         texts = [todo.text for todo in todos]
-        state.alarm_inputs.append((texts, language))
+        state.alarm_inputs.append((texts, language, voice))
         return "\n".join(f"alarm:{language}:{todo.at}:{todo.text}" for todo in todos)
 
     core.AlarmClock = FakeAlarmClock
@@ -1289,8 +1306,8 @@ def test_run_loop_writes_cr_frames_and_refreshes_flag_on_interval(
         "flag:ko:first",
         "flag:ko:second",
     ]
-    assert run_core.flag_inputs == [(["first"], "ko"), (["second"], "ko")]
-    assert run_core.reminder_inputs == [(["second"], "ko")]
+    assert run_core.flag_inputs == [(["first"], "ko", "feline"), (["second"], "ko", "feline")]
+    assert run_core.reminder_inputs == [(["second"], "ko", "feline")]
     assert writes[1] == "\nreminder:ko:second\n"
     assert writes[0].startswith("\rcat-a@0|flag:ko:first|w=40|emoji=False|")
     assert writes[2].startswith("\rcat-b@3|flag:ko:second|w=40|emoji=False|")
@@ -1332,7 +1349,7 @@ def test_run_loop_prints_alarm_block_above_marquee_on_fresh_line(
     assert writes[0] == "\nalarm:en:09:00:standup\n"
     assert writes[1].startswith("\rcat-a@0|flag:en:standup|w=50|emoji=False|🐱")
     assert run_core.alarm_updates == [["standup"]]
-    assert run_core.alarm_inputs == [(["standup"], "en")]
+    assert run_core.alarm_inputs == [(["standup"], "en", "feline")]
     assert not data_file.exists()
 
 
@@ -1446,7 +1463,7 @@ def test_run_cli_flags_resolve_character_language_ascii_and_fps(
     assert run_modules.terminal_inits == [(40, "robot")]
     assert run_modules.render_calls[0]["use_emoji"] is False
     assert run_modules.render_calls[0]["emoji"] == "🤖"
-    assert run_core.flag_inputs == [(["task"], "ko")]
+    assert run_core.flag_inputs == [(["task"], "ko", "robotic")]
     assert sleep_seconds == [0.2]
     assert not data_file.exists()
 
@@ -1478,7 +1495,7 @@ def test_run_default_interval_comes_from_config(
         max_frames=3,
         width_reader=lambda: 40,
     )
-    assert run_core.reminder_inputs == [(["task"], "en")]
+    assert run_core.reminder_inputs == [(["task"], "en", "feline")]
     assert not data_file.exists()
 
 
@@ -1622,6 +1639,47 @@ def test_overlay_once_prints_reminder_text_without_backend(
     assert data_file.exists()
 
 
+def test_overlay_once_uses_selected_character_voice(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    main(["add", "oil gears"])
+    capsys.readouterr()
+
+    exit_code = main(["overlay", "--once", "--character", "robot", "--lang", "en"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "en: oil gears\n"
+    assert captured.err == ""
+    assert state.reminder_inputs == [(["oil gears"], "en", "robotic")]
+    assert state.backend_calls == 0
+    assert data_file.exists()
+
+
+def test_overlay_once_unknown_character_prints_stderr_and_exits_1(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+
+    exit_code = main(["overlay", "--once", "--character", "nope"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "Unknown character: nope. Available: cat, robot, butterfly\n"
+    assert state.backend_calls == 0
+    assert not data_file.exists()
+
+
 def test_overlay_backend_runtime_error_prints_stderr_and_exits_1(
     data_file: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1687,10 +1745,12 @@ def test_overlay_gui_wires_config_env_and_backend_exit_code(
     assert state.options.movement == "walk"
     assert state.options.bubble_effect == "pop"
     assert state.options.message_style == "bubble"
+    assert state.options.voice == "robotic"
     assert state.scheduler is not None
     assert state.scheduler.interval_minutes == 7
     assert state.scheduler.snooze_minutes == 8
     assert state.reminder_text == "ko: builtin task"
+    assert state.reminder_inputs == [(["builtin task"], "ko", "robotic")]
     assert state.todos is not None
     assert [todo.text for todo in state.todos] == ["builtin task"]
     assert data_file.exists()
@@ -1951,6 +2011,7 @@ def test_overlay_auto_movement_resolves_persona_before_overlay_options(
         movement: str,
         bubble_effect: str,
         message_style: str,
+        voice: str,
     ) -> FakeOverlayOptions:
         events.append(f"options:{movement}")
         assert events == ["persona:robot", "options:float"]
@@ -1965,6 +2026,7 @@ def test_overlay_auto_movement_resolves_persona_before_overlay_options(
             message_style=message_style,
             sprite_name=sprite_name,
             sprite_folder=sprite_folder,
+            voice=voice,
         )
 
     base_module.OverlayOptions = overlay_options
@@ -2010,6 +2072,7 @@ def test_overlay_auto_message_style_resolves_persona_before_overlay_options(
         movement: str,
         bubble_effect: str,
         message_style: str,
+        voice: str,
     ) -> FakeOverlayOptions:
         events.append(f"options:{message_style}")
         assert events == ["persona:robot", "options:flag"]
@@ -2024,6 +2087,7 @@ def test_overlay_auto_message_style_resolves_persona_before_overlay_options(
             message_style=message_style,
             sprite_name=sprite_name,
             sprite_folder=sprite_folder,
+            voice=voice,
         )
 
     base_module.OverlayOptions = overlay_options
@@ -2080,6 +2144,7 @@ def test_overlay_character_blocky_wires_sprite_name_from_real_catalog(
     assert state.options is not None
     assert state.options.character.name == "blocky"
     assert state.options.sprite_name == "blocky"
+    assert state.options.voice == "gamer"
     assert not data_file.exists()
 
 

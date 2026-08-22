@@ -151,6 +151,9 @@ $ todoy tui
   (`--character 이름`, `--lang en|ko`, 이모지 없는 터미널엔 `--ascii`):
 
   ![25종 캐릭터와 걸음 사이클](demo/characters.gif)
+- 캐릭터마다 말투가 다릅니다: 기사는 격식 있게 "퀘스트 보고", 로봇은 삐빅
+  대기열 카운트, 해양 생물은 뱃사람 말투, 고양이는 그르릉, 유령은 우우,
+  blocky는 퀘스트 로그체 — 영어·한국어 모두.
 - 메시지는 할 일을 놀리지, 당신을 공격하지 않습니다. 캐릭터는 알려줄 뿐 — 끝내는 건 여전히 당신 몫.
 
 ### 데스크톱 위의 캐릭터 (`todoy overlay`, macOS)
@@ -182,7 +185,8 @@ reminder_interval_minutes`)마다 오늘의 할 일을 알려줍니다 — 그�
   `todoy overlay --movement gallop --message-style flag --character horse`
   — 말이 할 일이 적힌 깃발을 들고 화면을 질주합니다.
   이동: `walk`(기본) / `hop` / `float` / `dash` / `gallop` / `still`.
-  메시지 스타일: `bubble`(기본, 제자리) / `flag`(캐릭터와 함께 달림).
+  메시지 스타일: `bubble`(기본 — 내용만큼만 컴팩트한 높이로, 말꼬리가 항상
+  캐릭터를 가리키며 함께 따라다님) / `flag`(한 줄 페넌트, 캐릭터와 함께 달림).
   등장 효과: `--bubble-effect pop`(기본) / `fade` / `slide` / `shake` / `none`.
   config `[display]`의 `movement` / `message_style` / `bubble_effect`로 영구 설정.
 - `todoy overlay --once`는 GUI 없이 리마인드 텍스트만 출력합니다

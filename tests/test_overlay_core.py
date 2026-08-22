@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from todoy.display.messages import _VOICES
 from todoy.display.overlay.core import (
     AlarmClock,
     ReminderScheduler,
@@ -270,6 +271,21 @@ def test_build_reminder_text_korean_language() -> None:
     text = build_reminder_text([], "ko", rng=random.Random(1))
 
     assert text != ""
+
+
+def test_build_reminder_text_passes_voice_to_taunt_headline() -> None:
+    todos = [Todo(text="oil gears", id=1, source="builtin")]
+
+    text = build_reminder_text(todos, "en", rng=random.Random(3), voice="robotic")
+    headline = text.split("\n", 1)[0]
+
+    assert headline in [line.format(count=1) for line in _VOICES["robotic"]["en"]["taunt"]]
+
+
+def test_build_reminder_text_zero_todos_uses_voice_congrats() -> None:
+    text = build_reminder_text([], "ko", rng=random.Random(3), voice="feline")
+
+    assert text in [line.format(count=0) for line in _VOICES["feline"]["ko"]["congrats"]]
 
 
 # --- AlarmClock ---------------------------------------------------------------
@@ -582,6 +598,10 @@ def test_build_alarm_text_empty_list_is_empty_string() -> None:
     assert build_alarm_text([], "en") == ""
 
 
+def test_build_alarm_text_accepts_voice_keyword_for_signature_parity() -> None:
+    assert build_alarm_text([], "en", voice="spooky") == ""
+
+
 def test_build_alarm_text_single_due_todo_is_headline_then_text() -> None:
     todo = _todo("회의", at="14:00")
 
@@ -659,6 +679,12 @@ def test_build_flag_line_zero_todos_is_not_drawn_from_taunt_pool() -> None:
 
 def test_build_flag_line_rng_is_optional() -> None:
     assert build_flag_line([], "en") == "All clear 🎉"
+
+
+def test_build_flag_line_accepts_voice_keyword_for_signature_parity() -> None:
+    todos = [Todo(text="write report", id=1, source="builtin")]
+
+    assert build_flag_line(todos, "en", voice="knightly") == "1 to go: write report"
 
 
 def test_build_flag_line_single_todo_en_has_no_count_suffix() -> None:
@@ -756,6 +782,10 @@ def test_build_flag_line_truncation_preserves_count_suffix() -> None:
 
 def test_build_alarm_flag_line_empty_list_is_empty_string() -> None:
     assert build_alarm_flag_line([], "en") == ""
+
+
+def test_build_alarm_flag_line_accepts_voice_keyword_for_signature_parity() -> None:
+    assert build_alarm_flag_line([], "ko", voice="bouncy") == ""
 
 
 def test_build_alarm_flag_line_single_due_todo_no_suffix() -> None:
