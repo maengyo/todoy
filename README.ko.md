@@ -143,7 +143,9 @@ $ todoy tui
   ![픽셀 스프라이트 걷기](demo/sprites.gif)
 
   내 스프라이트도 쓸 수 있습니다: `[display] character_sprites`에
-  `walk_0.png, walk_1.png, idle_0.png…` 폴더를 지정하면 그대로 애니메이션.
+  `idle_1.png, walk_1.png, walk_2.png…` 파일이 든 폴더를 지정하면 그대로
+  애니메이션됩니다 (프레임 번호는 1부터, 빈 번호 없이; `idle`은 필수,
+  나머지 상태는 자동 대체).
 
 - 캐릭터 28종 — 전부 터미널 러너용 자체 애니메이션 걸음 사이클 보유
   (`--character 이름`, `--lang en|ko`, 이모지 없는 터미널엔 `--ascii`):

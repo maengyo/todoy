@@ -148,7 +148,8 @@ $ todoy tui
   ![pixel sprites walking](demo/sprites.gif)
 
   Bring your own sprites too: point `[display] character_sprites` at a folder
-  of `walk_0.png, walk_1.png, idle_0.png…` and todoy animates them.
+  of `idle_1.png, walk_1.png, walk_2.png…` (frames numbered from 1, no
+  gaps; `idle` is required, other states fall back) and todoy animates them.
 
 - 28 characters to choose from, every one with its own animated ASCII gait
   cycle for the terminal runner (`--character NAME`, `--lang en|ko`,
