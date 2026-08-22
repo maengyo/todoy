@@ -10,6 +10,7 @@ import pytest
 
 from todoy.config import (
     DEFAULT_INTERVAL_MINUTES,
+    DEFAULT_MESSAGE_STYLE,
     DEFAULT_MOVEMENT,
     Config,
     build_sources,
@@ -35,13 +36,18 @@ def test_load_config_returns_defaults_for_missing_file(tmp_path: Path) -> None:
     assert config.snooze_minutes == 5
     assert config.movement == "auto"
     assert config.bubble_effect == "pop"
-    assert config.message_style == "bubble"
+    assert config.message_style == "auto"
     assert config.daily_clear is False
 
 
 def test_default_movement_is_auto() -> None:
     assert DEFAULT_MOVEMENT == "auto"
     assert Config().movement == "auto"
+
+
+def test_default_message_style_is_auto() -> None:
+    assert DEFAULT_MESSAGE_STYLE == "auto"
+    assert Config().message_style == "auto"
 
 
 def test_config_path_todoy_config_file_wins(
@@ -139,7 +145,7 @@ character = "robot"
     assert config.character == "robot"
     assert config.movement == "auto"
     assert config.bubble_effect == "pop"
-    assert config.message_style == "bubble"
+    assert config.message_style == "auto"
 
 
 def test_load_config_preserves_explicit_walk_movement(tmp_path: Path) -> None:
@@ -335,6 +341,29 @@ def test_save_config_omits_auto_movement_when_effective_default(tmp_path: Path) 
     assert "[display]" in text
     assert "movement" not in text
     assert load_config(path) == Config(character="robot")
+
+
+def test_save_config_round_trips_message_style_default_and_explicit_values(
+    tmp_path: Path,
+) -> None:
+    auto_path = tmp_path / "auto.toml"
+
+    save_config(Config(character="robot", message_style="auto"), auto_path)
+
+    auto_text = auto_path.read_text(encoding="utf-8")
+    assert "[display]" in auto_text
+    assert "message_style" not in auto_text
+    assert load_config(auto_path) == Config(character="robot")
+
+    for style in ("bubble", "flag"):
+        path = tmp_path / f"{style}.toml"
+        config = Config(character="robot", message_style=style)
+
+        save_config(config, path)
+
+        text = path.read_text(encoding="utf-8")
+        assert f'message_style = "{style}"' in text
+        assert load_config(path) == config
 
 
 def test_save_config_omits_default_animation_keys_from_nondefault_display_table(

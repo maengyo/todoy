@@ -79,6 +79,7 @@ class FakeOverlayOptions:
 @dataclass(frozen=True)
 class FakePersona:
     movement: str
+    banner: bool
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,7 @@ def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
     animations = types.ModuleType("todoy.display.overlay.animations")
     movements = ("auto", "walk", "hop", "float", "dash", "gallop", "still")
     bubble_effects = ("pop", "fade", "slide", "shake", "none")
-    message_styles = ("bubble", "flag")
+    message_styles = ("auto", "bubble", "flag")
 
     def validate_movement(name: str) -> str:
         if name not in movements:
@@ -165,6 +166,7 @@ def install_fake_animation_module(monkeypatch: pytest.MonkeyPatch) -> None:
 def install_fake_personas_module(
     monkeypatch: pytest.MonkeyPatch,
     movements: dict[str, str] | None = None,
+    banners: dict[str, bool] | None = None,
     events: list[str] | None = None,
 ) -> list[str]:
     personas = types.ModuleType("todoy.display.overlay.personas")
@@ -172,16 +174,28 @@ def install_fake_personas_module(
         "cat": "walk",
         "robot": "walk",
         "horse": "walk",
+        "butterfly": "float",
+    }
+    resolved_banners = {
+        "cat": False,
+        "robot": False,
+        "horse": False,
+        "butterfly": True,
     }
     if movements is not None:
         resolved_movements.update(movements)
+    if banners is not None:
+        resolved_banners.update(banners)
     calls: list[str] = []
 
     def persona(character_name: str) -> FakePersona:
         calls.append(character_name)
         if events is not None:
             events.append(f"persona:{character_name}")
-        return FakePersona(movement=resolved_movements.get(character_name, "walk"))
+        return FakePersona(
+            movement=resolved_movements.get(character_name, "walk"),
+            banner=resolved_banners.get(character_name, False),
+        )
 
     personas.persona = persona
     monkeypatch.setitem(sys.modules, "todoy.display.overlay.personas", personas)
@@ -206,6 +220,7 @@ def install_fake_display_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     available = {
         "cat": FakeCharacter(name="cat", emoji="🐱", ascii_art="(=^.^=)"),
         "robot": FakeCharacter(name="robot", emoji="🤖", ascii_art="[robot]"),
+        "butterfly": FakeCharacter(name="butterfly", emoji="🦋", ascii_art="><(^.^)><"),
     }
 
     def get_character(name: str | None = None) -> FakeCharacter:
@@ -1193,7 +1208,7 @@ def test_tui_unknown_character_prints_stderr_and_exits_1(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert captured.err == "Unknown character: dragon[31m. Available: cat, robot\n"
+    assert captured.err == "Unknown character: dragon[31m. Available: cat, robot, butterfly\n"
     assert "\x1b" not in captured.err
     assert "\x07" not in captured.err
     assert not data_file.exists()
@@ -1838,6 +1853,70 @@ def test_overlay_accepts_gallop_movement_flag(
     assert not data_file.exists()
 
 
+def test_overlay_default_message_style_resolves_butterfly_banner_to_flag(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+
+    exit_code = main(["overlay", "--character", "butterfly", "--movement", "walk"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.options is not None
+    assert state.options.message_style == "flag"
+    assert not data_file.exists()
+
+
+def test_overlay_default_message_style_resolves_cat_without_banner_to_bubble(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+
+    exit_code = main(["overlay", "--character", "cat", "--movement", "walk"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.options is not None
+    assert state.options.message_style == "bubble"
+    assert not data_file.exists()
+
+
+def test_overlay_explicit_bubble_message_style_wins_for_butterfly(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    persona_calls = install_fake_personas_module(monkeypatch)
+
+    exit_code = main(
+        ["overlay", "--character", "butterfly", "--movement", "walk", "--message-style", "bubble"]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert persona_calls == []
+    assert state.options is not None
+    assert state.options.message_style == "bubble"
+    assert not data_file.exists()
+
+
 def test_overlay_auto_movement_resolves_persona_before_overlay_options(
     data_file: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1879,7 +1958,9 @@ def test_overlay_auto_movement_resolves_persona_before_overlay_options(
 
     base_module.OverlayOptions = overlay_options
 
-    exit_code = main(["overlay", "--character", "robot", "--movement", "auto"])
+    exit_code = main(
+        ["overlay", "--character", "robot", "--movement", "auto", "--message-style", "bubble"]
+    )
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -1888,6 +1969,61 @@ def test_overlay_auto_movement_resolves_persona_before_overlay_options(
     assert persona_calls == ["robot"]
     assert state.options is not None
     assert state.options.movement == "float"
+    assert not data_file.exists()
+
+
+def test_overlay_auto_message_style_resolves_persona_before_overlay_options(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_fake_display_modules(monkeypatch)
+    install_fake_animation_module(monkeypatch)
+    state = install_fake_overlay_modules(monkeypatch)
+    events: list[str] = []
+    persona_calls = install_fake_personas_module(
+        monkeypatch,
+        banners={"robot": True},
+        events=events,
+    )
+    base_module = sys.modules["todoy.display.overlay.base"]
+
+    def overlay_options(
+        *,
+        character: FakeCharacter,
+        character_image: Path | None,
+        language: str,
+        test_seconds: float | None,
+        movement: str,
+        bubble_effect: str,
+        message_style: str,
+    ) -> FakeOverlayOptions:
+        events.append(f"options:{message_style}")
+        assert events == ["persona:robot", "options:flag"]
+        assert message_style != "auto"
+        return FakeOverlayOptions(
+            character=character,
+            character_image=character_image,
+            language=language,
+            test_seconds=test_seconds,
+            movement=movement,
+            bubble_effect=bubble_effect,
+            message_style=message_style,
+        )
+
+    base_module.OverlayOptions = overlay_options
+
+    exit_code = main(
+        ["overlay", "--character", "robot", "--movement", "walk", "--message-style", "auto"]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert persona_calls == ["robot"]
+    assert state.options is not None
+    assert state.options.message_style == "flag"
     assert not data_file.exists()
 
 
@@ -1973,7 +2109,7 @@ def test_overlay_rejects_invalid_cli_message_style_choice(
         ),
         (
             '[display]\nmessage_style = "scroll\\u001b]0;x\\u0007"\n',
-            "Unknown message style: scroll]0;x. Available: bubble, flag\n",
+            "Unknown message style: scroll]0;x. Available: auto, bubble, flag\n",
         ),
     ],
 )
@@ -2033,6 +2169,40 @@ def test_real_overlay_message_style_validator_rejects_bad_input() -> None:
 
     with pytest.raises(ValueError, match="^Unknown message style: scroll\\. Available:"):
         animations.validate_message_style("scroll")
+
+
+@pytest.mark.skipif(
+    animations_spec is None or personas_spec is None,
+    reason="todoy.display.overlay real modules unavailable",
+)
+def test_overlay_auto_message_style_uses_real_personas_end_to_end(
+    data_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = FakeOverlayState()
+    base = types.ModuleType("todoy.display.overlay.base")
+
+    def create_backend() -> FakeOverlayBackend:
+        state.backend_calls += 1
+        return FakeOverlayBackend(state)
+
+    base.OverlayOptions = FakeOverlayOptions
+    base.PanelActions = FakePanelActions
+    base.create_backend = create_backend
+    monkeypatch.setitem(sys.modules, "todoy.display.overlay.base", base)
+
+    exit_code = main(["overlay", "--character", "butterfly", "--movement", "walk"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert state.backend_calls == 1
+    assert state.options is not None
+    assert state.options.character.name == "butterfly"
+    assert state.options.message_style == "flag"
+    assert not data_file.exists()
 
 
 @pytest.mark.skipif(personas_spec is None, reason="todoy.display.overlay.personas unavailable")

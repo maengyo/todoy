@@ -645,7 +645,7 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
     bubble_effect = animations_module.validate_bubble_effect(
         args.bubble_effect if args.bubble_effect is not None else config.bubble_effect
     )
-    message_style = animations_module.validate_message_style(
+    configured_message_style = animations_module.validate_message_style(
         args.message_style if args.message_style is not None else config.message_style
     )
 
@@ -660,7 +660,14 @@ def _overlay(args: argparse.Namespace, source: BuiltinSource) -> int:
     base_module = importlib.import_module("todoy.display.overlay.base")
     character = get_character(args.character if args.character is not None else config.character)
     movement = _resolve_overlay_movement(configured_movement, character.name, animations_module)
+    message_style = _resolve_overlay_message_style(
+        configured_message_style,
+        character.name,
+        animations_module,
+    )
     scheduler = core_module.ReminderScheduler(interval_minutes, config.snooze_minutes)
+    assert movement != "auto"
+    assert message_style != "auto"
     options = base_module.OverlayOptions(
         character=character,
         character_image=config.character_image,
@@ -701,6 +708,19 @@ def _resolve_overlay_movement(
     if movement == "auto":
         raise ValueError("Persona movement must be concrete, not auto")
     return movement
+
+
+def _resolve_overlay_message_style(
+    configured_message_style: str,
+    character_name: str,
+    animations_module: Any,
+) -> str:
+    if configured_message_style != "auto":
+        return configured_message_style
+
+    personas_module = importlib.import_module("todoy.display.overlay.personas")
+    message_style = "flag" if personas_module.persona(character_name).banner else "bubble"
+    return animations_module.validate_message_style(message_style)
 
 
 def _overlay_test_seconds() -> float | None:

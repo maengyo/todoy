@@ -56,7 +56,7 @@ def test_bubble_effects_tuple_contents() -> None:
 
 
 def test_message_styles_tuple_contents() -> None:
-    assert MESSAGE_STYLES == ("bubble", "flag")
+    assert MESSAGE_STYLES == ("auto", "bubble", "flag")
 
 
 # --- validate_movement / validate_bubble_effect -------------------------------
@@ -99,7 +99,7 @@ def test_validate_message_style_rejects_unknown_name() -> None:
     with pytest.raises(ValueError) as exc_info:
         validate_message_style("banner")
 
-    assert str(exc_info.value) == ("Unknown message style: banner. Available: bubble, flag")
+    assert str(exc_info.value) == ("Unknown message style: banner. Available: auto, bubble, flag")
 
 
 # --- CharacterMovement: determinism -------------------------------------------

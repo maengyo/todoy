@@ -19,7 +19,7 @@ import random
 
 MOVEMENTS: tuple[str, ...] = ("auto", "walk", "hop", "float", "dash", "gallop", "still")
 BUBBLE_EFFECTS: tuple[str, ...] = ("pop", "fade", "slide", "shake", "none")
-MESSAGE_STYLES: tuple[str, ...] = ("bubble", "flag")
+MESSAGE_STYLES: tuple[str, ...] = ("auto", "bubble", "flag")
 
 # --- tunables (implementation detail; not part of the frozen contract) -------
 
